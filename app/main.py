@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import health
+from app.routers import health, hockey
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,6 +36,7 @@ def create_app() -> FastAPI:
         )
 
     application.include_router(health.router, prefix="/api/v1")
+    application.include_router(hockey.router, prefix="/api/v1")
 
     return application
 

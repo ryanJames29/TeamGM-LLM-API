@@ -17,6 +17,12 @@ class Settings(BaseSettings):
         alias="CORS_ORIGINS",
     )
 
+    api_sports_key: str | None = Field(default=None, alias="API_SPORTS_KEY")
+    api_sports_hockey_base_url: str = Field(
+        default="https://v1.hockey.api-sports.io",
+        alias="API_SPORTS_HOCKEY_BASE_URL",
+    )
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
