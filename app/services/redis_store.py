@@ -1,7 +1,10 @@
 import json
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from redis.asyncio import Redis
+from redis.exceptions import LockError, LockNotOwnedError
 
 from app.config import Settings
 from app.types import JsonObject, JsonValue
@@ -9,6 +12,8 @@ from app.types import JsonObject, JsonValue
 logger = logging.getLogger(__name__)
 
 _redis: Redis | None = None
+
+NHL_SYNC_LOCK_PREFIX = "nhl:sync:lock:"
 
 
 async def connect_redis(settings: Settings) -> Redis:
@@ -32,6 +37,36 @@ def get_redis() -> Redis:
     if _redis is None:
         raise RuntimeError("Redis is not connected. Start the API with ENABLE_NHL_JOBS=true.")
     return _redis
+
+
+@asynccontextmanager
+async def nhl_sync_lock(job_name: str, ttl_seconds: int) -> AsyncIterator[bool]:
+    """
+    Distributed lock so only one API worker runs a given NHL background job.
+
+    If another instance holds the lock, yields False and the caller should skip work.
+    """
+    redis = get_redis()
+    lock = redis.lock(f"{NHL_SYNC_LOCK_PREFIX}{job_name}", timeout=ttl_seconds)
+    acquired = False
+    try:
+        acquired = await lock.acquire(blocking=False)
+    except LockError:
+        acquired = False
+
+    if not acquired:
+        logger.info("Skipping NHL job %s — lock held by another API instance", job_name)
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        if acquired:
+            try:
+                await lock.release()
+            except LockNotOwnedError:
+                logger.warning("NHL lock %s was not owned on release (expired?)", job_name)
 
 
 async def redis_get_json(key: str) -> JsonValue | None:

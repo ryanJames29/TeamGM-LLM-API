@@ -47,6 +47,12 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 On startup the API connects to Redis, starts scheduled jobs, and runs an initial sync.
 
+### Multiple API workers
+
+NHL background jobs acquire a **shared Redis lock** (`nhl:sync:lock:global`) so only one process runs standings, window, or minute sync at a time. You can run several Uvicorn/Gunicorn workers for HTTP traffic; duplicate schedulers will skip work when the lock is held.
+
+`ENABLE_NHL_JOBS=false` disables the scheduler on a worker if you prefer a dedicated job runner.
+
 - Docs: http://127.0.0.1:8000/docs
 - Health: http://127.0.0.1:8000/api/v1/health
 - NHL games (mobile): http://127.0.0.1:8000/api/v1/hockey/nhl/games

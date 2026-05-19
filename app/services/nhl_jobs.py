@@ -9,9 +9,8 @@ Schedules (defaults):
   - Live scores + today/yesterday + game stats: every minute → Redis
 """
 
-import asyncio
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from time import monotonic
 
 from app.config import Settings
@@ -33,13 +32,24 @@ from app.services.nhl_cache import (
     game_stats_key,
     records_key,
 )
-from app.services.redis_store import redis_hmset_json, redis_replace_hash_json, redis_set_json, safe_redis_get_json
+from app.services.redis_store import (
+    nhl_sync_lock,
+    redis_hmset_json,
+    redis_replace_hash_json,
+    redis_set_json,
+    safe_redis_get_json,
+)
 from app.services.supabase_store import SupabaseStore
 from app.types import JsonObject
 
 logger = logging.getLogger(__name__)
 
-_job_lock = asyncio.Lock()
+# One Redis lock for every NHL background job (multi-worker safe).
+NHL_SYNC_LOCK_KEY = "global"
+# Safety expiry if a worker dies mid-job (released on normal completion).
+_LOCK_TTL_GLOBAL = 15 * 60
+_LOCK_TTL_INITIAL = 15 * 60
+
 _last_window_refresh: float = 0.0
 
 
@@ -83,6 +93,13 @@ async def _fetch_game_statistics(
 
 async def sync_nhl_standings(settings: Settings) -> None:
     """Hourly: league metadata + standings → Supabase + Redis records."""
+    async with nhl_sync_lock(NHL_SYNC_LOCK_KEY, _LOCK_TTL_GLOBAL) as acquired:
+        if not acquired:
+            return
+        await _sync_nhl_standings(settings)
+
+
+async def _sync_nhl_standings(settings: Settings) -> None:
     client = ApiSportsClient(settings)
     supabase = SupabaseStore(settings)
 
@@ -133,12 +150,19 @@ async def sync_nhl_standings(settings: Settings) -> None:
 
 async def sync_nhl_games_window(settings: Settings) -> None:
     """Daily / on startup: backfill 7+3 day window into Redis (11 API calls once)."""
+    async with nhl_sync_lock(NHL_SYNC_LOCK_KEY, _LOCK_TTL_GLOBAL) as acquired:
+        if not acquired:
+            return
+        await _sync_nhl_games_window(settings)
+
+
+async def _sync_nhl_games_window(settings: Settings) -> None:
     global _last_window_refresh
 
     client = ApiSportsClient(settings)
     league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
     if not league_meta:
-        await sync_nhl_standings(settings)
+        await _sync_nhl_standings(settings)
         league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
     if not league_meta:
         logger.warning("Skipping window sync — no league metadata")
@@ -174,72 +198,78 @@ async def sync_nhl_scores_minute(settings: Settings) -> None:
 
     Typical API usage per run: 2 game-day calls + up to N live statistics calls.
     """
+    async with nhl_sync_lock(NHL_SYNC_LOCK_KEY, _LOCK_TTL_GLOBAL) as acquired:
+        if not acquired:
+            return
+        await _sync_nhl_scores_minute(settings)
+
+
+async def _sync_nhl_scores_minute(settings: Settings) -> None:
     global _last_window_refresh
 
-    async with _job_lock:
-        client = ApiSportsClient(settings)
-        supabase = SupabaseStore(settings)
+    client = ApiSportsClient(settings)
+    supabase = SupabaseStore(settings)
 
+    league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
+    if not league_meta:
+        await _sync_nhl_standings(settings)
         league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
-        if not league_meta:
-            await sync_nhl_standings(settings)
-            league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
-        if not league_meta:
-            logger.warning("Skipping minute scores sync — no league metadata")
-            return
+    if not league_meta:
+        logger.warning("Skipping minute scores sync — no league metadata")
+        return
 
-        season = int(league_meta["season"])
-        records = await safe_redis_get_json(records_key(season))
-        if not isinstance(records, dict) or not records:
-            if supabase.enabled:
-                db_records = await supabase.load_records_map(season)
-                records = {str(k): v for k, v in db_records.items()}
-                await redis_set_json(records_key(season), records)
-            else:
-                records = {}
+    season = int(league_meta["season"])
+    records = await safe_redis_get_json(records_key(season))
+    if not isinstance(records, dict) or not records:
+        if supabase.enabled:
+            db_records = await supabase.load_records_map(season)
+            records = {str(k): v for k, v in db_records.items()}
+            await redis_set_json(records_key(season), records)
+        else:
+            records = {}
 
-        # Refresh full window once per day (or on cold start).
-        refresh_interval = settings.nhl_window_refresh_hours * 3600
-        if monotonic() - _last_window_refresh >= refresh_interval:
-            await sync_nhl_games_window(settings)
+    # Refresh full window once per day (or on cold start).
+    refresh_interval = settings.nhl_window_refresh_hours * 3600
+    if monotonic() - _last_window_refresh >= refresh_interval:
+        await _sync_nhl_games_window(settings)
 
-        today = datetime.now(timezone.utc).date()
-        dates_to_poll = [today, today - timedelta(days=1)]
-        api_calls = 0
-        updated: dict[str, JsonObject] = {}
+    today = datetime.now(timezone.utc).date()
+    dates_to_poll = [today, today - timedelta(days=1)]
+    api_calls = 0
+    updated: dict[str, JsonObject] = {}
 
-        for game_date in dates_to_poll:
-            batch = await fetch_games_for_date(client, season, game_date)
-            api_calls += 1
-            for game in batch:
-                game_id = game.get("id")
-                if game_id is not None:
-                    updated[str(game_id)] = game
+    for game_date in dates_to_poll:
+        batch = await fetch_games_for_date(client, season, game_date)
+        api_calls += 1
+        for game in batch:
+            game_id = game.get("id")
+            if game_id is not None:
+                updated[str(game_id)] = game
 
-        if updated:
-            await redis_hmset_json(KEY_RAW_GAMES_HASH, updated)
+    if updated:
+        await redis_hmset_json(KEY_RAW_GAMES_HASH, updated)
 
-        live_ids = [int(gid) for gid, g in updated.items() if _is_live(g)]
-        stats_calls = 0
-        for game_id in live_ids[:12]:
-            stats = await _fetch_game_statistics(client, game_id)
-            stats_calls += 1
-            if stats is not None:
-                await redis_set_json(game_stats_key(game_id), stats, ttl_seconds=7200)
+    live_ids = [int(gid) for gid, g in updated.items() if _is_live(g)]
+    stats_calls = 0
+    for game_id in live_ids[:12]:
+        stats = await _fetch_game_statistics(client, game_id)
+        stats_calls += 1
+        if stats is not None:
+            await redis_set_json(game_stats_key(game_id), stats, ttl_seconds=7200)
 
-        payload = await build_scores_payload_from_cache(settings)
+    payload = await build_scores_payload_from_cache(settings)
 
-        status = await redis_get_sync_status()
-        status["lastScoresSync"] = datetime.now(timezone.utc).isoformat()
-        status["minuteApiCalls"] = status.get("minuteApiCalls", 0) + api_calls + stats_calls
-        status["liveGamesPolled"] = len(live_ids)
-        await redis_set_json(KEY_SYNC_STATUS, status)
-        logger.info(
-            "NHL minute sync: %s day-calls, %s live stats, %s games in payload",
-            api_calls,
-            stats_calls,
-            len(payload.get("games", [])) if payload else 0,
-        )
+    status = await redis_get_sync_status()
+    status["lastScoresSync"] = datetime.now(timezone.utc).isoformat()
+    status["minuteApiCalls"] = status.get("minuteApiCalls", 0) + api_calls + stats_calls
+    status["liveGamesPolled"] = len(live_ids)
+    await redis_set_json(KEY_SYNC_STATUS, status)
+    logger.info(
+        "NHL minute sync: %s day-calls, %s live stats, %s games in payload",
+        api_calls,
+        stats_calls,
+        len(payload.get("games", [])) if payload else 0,
+    )
 
 
 async def redis_get_sync_status() -> JsonObject:

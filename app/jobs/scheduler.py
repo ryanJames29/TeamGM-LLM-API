@@ -6,10 +6,13 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.config import Settings
 from app.services.nhl_jobs import (
-    sync_nhl_games_window,
-    sync_nhl_scores_minute,
-    sync_nhl_standings,
+    NHL_SYNC_LOCK_KEY,
+    _LOCK_TTL_INITIAL,
+    _sync_nhl_games_window,
+    _sync_nhl_scores_minute,
+    _sync_nhl_standings,
 )
+from app.services.redis_store import nhl_sync_lock
 
 logger = logging.getLogger(__name__)
 
@@ -50,16 +53,20 @@ def create_nhl_scheduler(settings: Settings) -> AsyncIOScheduler:
 
 async def run_initial_nhl_sync(settings: Settings) -> None:
     """Populate cache on startup so the first client request is not empty."""
-    logger.info("Running initial NHL sync (standings → window → scores)")
-    for step_name, step in (
-        ("standings", sync_nhl_standings),
-        ("window", sync_nhl_games_window),
-        ("scores", sync_nhl_scores_minute),
-    ):
-        try:
-            await step(settings)
-        except Exception:
-            logger.exception("Initial NHL sync step %s failed — continuing", step_name)
+    async with nhl_sync_lock(NHL_SYNC_LOCK_KEY, _LOCK_TTL_INITIAL) as acquired:
+        if not acquired:
+            logger.info("Skipping initial NHL sync — another API instance is running NHL jobs")
+            return
+        logger.info("Running initial NHL sync (standings → window → scores)")
+        for step_name, step in (
+            ("standings", _sync_nhl_standings),
+            ("window", _sync_nhl_games_window),
+            ("scores", _sync_nhl_scores_minute),
+        ):
+            try:
+                await step(settings)
+            except Exception:
+                logger.exception("Initial NHL sync step %s failed — continuing", step_name)
 
 
 def schedule_initial_sync(settings: Settings) -> None:

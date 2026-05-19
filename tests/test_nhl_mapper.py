@@ -104,6 +104,46 @@ def test_map_game_scheduled_hides_scores():
     assert game["homeTeam"]["score"] is None
 
 
+def test_map_game_live_overtime_five_minute_period():
+    """Regular-season OT is 5 minutes; timer is elapsed minutes in the period."""
+    raw = {
+        "id": 99,
+        "date": "2026-05-18T23:30:00+00:00",
+        "timer": "4",
+        "status": {"short": "OT", "long": "Overtime"},
+        "teams": {
+            "away": {"id": 10, "name": "Montreal Canadiens"},
+            "home": {"id": 20, "name": "Buffalo Sabres"},
+        },
+        "scores": {"away": 2, "home": 2},
+        "week": "18",
+    }
+
+    game = map_game(raw, {})
+
+    assert game["periodLabel"] == "1:00 - OT"
+
+
+def test_map_game_live_playoff_overtime_twenty_minute_period():
+    """Playoff OT is 20 minutes (API-Sports timer still elapsed minutes)."""
+    raw = {
+        "id": 425583,
+        "date": "2026-05-18T23:30:00+00:00",
+        "timer": "11",
+        "status": {"short": "OT", "long": "Over Time"},
+        "teams": {
+            "away": {"id": 688, "name": "Montreal Canadiens"},
+            "home": {"id": 674, "name": "Buffalo Sabres"},
+        },
+        "scores": {"away": 2, "home": 2},
+        "week": "Quarter-finals",
+    }
+
+    game = map_game(raw, {})
+
+    assert game["periodLabel"] == "9:00 - OT"
+
+
 def test_map_game_cancelled():
     raw = {
         "id": 3,
