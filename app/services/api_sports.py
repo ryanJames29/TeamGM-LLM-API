@@ -1,10 +1,12 @@
 import logging
-from typing import Any
+from collections.abc import Mapping
+from typing import cast
 
 import httpx
 from fastapi import HTTPException, status
 
 from app.config import Settings
+from app.types import JsonObject
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,14 @@ def _get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
-def _parse_api_sports_errors(payload: dict[str, Any]) -> str | None:
+async def close_api_sports_client() -> None:
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+    _http_client = None
+
+
+def _parse_api_sports_errors(payload: JsonObject) -> str | None:
     errors = payload.get("errors")
     if not errors:
         return None
@@ -44,7 +53,11 @@ class ApiSportsClient:
             )
         return key.strip()
 
-    async def get_hockey(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def get_hockey(
+        self,
+        path: str,
+        params: Mapping[str, object] | None = None,
+    ) -> JsonObject:
         api_key = self._require_key()
         base = self._settings.api_sports_hockey_base_url.rstrip("/")
         url = f"{base}/{path.lstrip('/')}"
@@ -78,7 +91,13 @@ class ApiSportsClient:
             )
 
         payload = response.json()
-        api_error = _parse_api_sports_errors(payload)
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="API-Sports returned an invalid payload.",
+            )
+        parsed_payload = cast(JsonObject, payload)
+        api_error = _parse_api_sports_errors(parsed_payload)
         if api_error:
             logger.warning("API-Sports logical error for %s: %s", url, api_error)
             raise HTTPException(
@@ -86,4 +105,4 @@ class ApiSportsClient:
                 detail=api_error,
             )
 
-        return payload
+        return parsed_payload

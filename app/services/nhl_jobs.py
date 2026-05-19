@@ -13,7 +13,6 @@ import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
 from time import monotonic
-from typing import Any
 
 from app.config import Settings
 from app.services.api_sports import ApiSportsClient
@@ -25,19 +24,18 @@ from app.services.nhl import (
     fetch_nhl_league,
     get_current_season,
     parse_standings_by_team,
-    parse_standings_records,
 )
 from app.services.nhl_cache import (
     KEY_LEAGUE_META,
     KEY_RAW_GAMES_HASH,
-    KEY_SCORES_PAYLOAD,
     KEY_SYNC_STATUS,
     build_scores_payload_from_cache,
     game_stats_key,
     records_key,
 )
-from app.services.redis_store import redis_hmset_json, redis_set_json
+from app.services.redis_store import redis_hmset_json, redis_replace_hash_json, redis_set_json, safe_redis_get_json
 from app.services.supabase_store import SupabaseStore
+from app.types import JsonObject
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +43,9 @@ _job_lock = asyncio.Lock()
 _last_window_refresh: float = 0.0
 
 
-def _standings_rows(standings_by_team: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+def _standings_rows(standings_by_team: dict[int, JsonObject]) -> list[JsonObject]:
     """Rows for Supabase (one per team, regular-season division)."""
-    rows: list[dict[str, Any]] = []
+    rows: list[JsonObject] = []
     for team_id, info in standings_by_team.items():
         record = info.get("record", "—")
         parts = record.split("-")
@@ -62,6 +60,7 @@ def _standings_rows(standings_by_team: dict[int, dict[str, Any]]) -> list[dict[s
                 "losses": losses,
                 "ot_losses": otl,
                 "record": record,
+                "standing": info.get("standing"),
                 "points": None,
                 "position": info.get("position"),
             }
@@ -69,14 +68,14 @@ def _standings_rows(standings_by_team: dict[int, dict[str, Any]]) -> list[dict[s
     return rows
 
 
-def _is_live(raw: dict[str, Any]) -> bool:
+def _is_live(raw: JsonObject) -> bool:
     return raw.get("status", {}).get("short", "") in _LIVE
 
 
 async def _fetch_game_statistics(
     client: ApiSportsClient,
     game_id: int,
-) -> dict[str, Any] | None:
+) -> JsonObject | None:
     """Hockey v1 has no games/statistics endpoint — skip until API-Sports adds it."""
     del client, game_id
     return None
@@ -137,10 +136,10 @@ async def sync_nhl_games_window(settings: Settings) -> None:
     global _last_window_refresh
 
     client = ApiSportsClient(settings)
-    league_meta = await redis_get_json_safe(KEY_LEAGUE_META)
+    league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
     if not league_meta:
         await sync_nhl_standings(settings)
-        league_meta = await redis_get_json_safe(KEY_LEAGUE_META)
+        league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
     if not league_meta:
         logger.warning("Skipping window sync — no league metadata")
         return
@@ -157,7 +156,7 @@ async def sync_nhl_games_window(settings: Settings) -> None:
     )
 
     mapping = {str(g["id"]): g for g in raw_games if g.get("id") is not None}
-    await redis_hmset_json(KEY_RAW_GAMES_HASH, mapping)
+    await redis_replace_hash_json(KEY_RAW_GAMES_HASH, mapping)
 
     _last_window_refresh = monotonic()
     status = await redis_get_sync_status()
@@ -181,16 +180,16 @@ async def sync_nhl_scores_minute(settings: Settings) -> None:
         client = ApiSportsClient(settings)
         supabase = SupabaseStore(settings)
 
-        league_meta = await redis_get_json_safe(KEY_LEAGUE_META)
+        league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
         if not league_meta:
             await sync_nhl_standings(settings)
-            league_meta = await redis_get_json_safe(KEY_LEAGUE_META)
+            league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
         if not league_meta:
             logger.warning("Skipping minute scores sync — no league metadata")
             return
 
         season = int(league_meta["season"])
-        records = await redis_get_json_safe(records_key(season))
+        records = await safe_redis_get_json(records_key(season))
         if not isinstance(records, dict) or not records:
             if supabase.enabled:
                 db_records = await supabase.load_records_map(season)
@@ -207,7 +206,7 @@ async def sync_nhl_scores_minute(settings: Settings) -> None:
         today = datetime.now(timezone.utc).date()
         dates_to_poll = [today, today - timedelta(days=1)]
         api_calls = 0
-        updated: dict[str, Any] = {}
+        updated: dict[str, JsonObject] = {}
 
         for game_date in dates_to_poll:
             batch = await fetch_games_for_date(client, season, game_date)
@@ -229,8 +228,6 @@ async def sync_nhl_scores_minute(settings: Settings) -> None:
                 await redis_set_json(game_stats_key(game_id), stats, ttl_seconds=7200)
 
         payload = await build_scores_payload_from_cache(settings)
-        if payload is not None:
-            await redis_set_json(KEY_SCORES_PAYLOAD, payload, ttl_seconds=300)
 
         status = await redis_get_sync_status()
         status["lastScoresSync"] = datetime.now(timezone.utc).isoformat()
@@ -245,15 +242,6 @@ async def sync_nhl_scores_minute(settings: Settings) -> None:
         )
 
 
-async def redis_get_json_safe(key: str) -> Any | None:
-    from app.services.redis_store import redis_get_json
-
-    try:
-        return await redis_get_json(key)
-    except RuntimeError:
-        return None
-
-
-async def redis_get_sync_status() -> dict[str, Any]:
-    status = await redis_get_json_safe(KEY_SYNC_STATUS)
+async def redis_get_sync_status() -> JsonObject:
+    status = await safe_redis_get_json(KEY_SYNC_STATUS)
     return status if isinstance(status, dict) else {}

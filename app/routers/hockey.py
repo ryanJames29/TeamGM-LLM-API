@@ -1,14 +1,13 @@
 import logging
 from datetime import date
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.config import Settings, get_settings
+from app.schemas.hockey import NhlLeagueResponse, NhlScoresResponse, NhlSyncStatusResponse
 from app.services.nhl_cache import (
     KEY_LEAGUE_META,
     KEY_RAW_GAMES_HASH,
-    KEY_SCORES_PAYLOAD,
     KEY_SYNC_STATUS,
     build_scores_payload_from_cache,
 )
@@ -19,8 +18,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hockey", tags=["hockey"])
 
 
-@router.get("/nhl/league")
-async def get_nhl_league() -> dict[str, Any]:
+@router.get("/nhl/league", response_model=NhlLeagueResponse)
+async def get_nhl_league() -> dict[str, object]:
     """NHL league metadata from Redis (updated hourly by background job)."""
     meta = await safe_redis_get_json(KEY_LEAGUE_META)
     if not meta:
@@ -37,7 +36,7 @@ async def get_nhl_league() -> dict[str, Any]:
     }
 
 
-@router.get("/nhl/games")
+@router.get("/nhl/games", response_model=NhlScoresResponse)
 async def get_nhl_games(
     date_param: str | None = Query(
         default=None,
@@ -45,7 +44,7 @@ async def get_nhl_games(
         description="Center date (YYYY-MM-DD). Defaults to today (UTC).",
     ),
     settings: Settings = Depends(get_settings),
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """
     NHL scores for the mobile app.
 
@@ -76,17 +75,13 @@ async def get_nhl_games(
     return payload
 
 
-@router.get("/nhl/sync-status")
-async def get_nhl_sync_status() -> dict[str, Any]:
+@router.get("/nhl/sync-status", response_model=NhlSyncStatusResponse)
+async def get_nhl_sync_status() -> dict[str, object]:
     """Operational status for NHL background jobs (dev / monitoring)."""
     status_payload = await safe_redis_get_json(KEY_SYNC_STATUS)
     meta = await safe_redis_get_json(KEY_LEAGUE_META)
 
     raw_games_count = await safe_redis_hlen(KEY_RAW_GAMES_HASH)
-    cached_payload = await safe_redis_get_json(KEY_SCORES_PAYLOAD)
-    scores_game_count: int | None = None
-    if isinstance(cached_payload, dict) and isinstance(cached_payload.get("games"), list):
-        scores_game_count = len(cached_payload["games"])
 
     return {
         "status": "ok",
@@ -94,6 +89,5 @@ async def get_nhl_sync_status() -> dict[str, Any]:
         "leagueMetaReady": meta is not None,
         "cache": {
             "rawGamesInRedis": raw_games_count,
-            "scoresPayloadGameCount": scores_game_count,
         },
     }

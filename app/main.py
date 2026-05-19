@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.jobs.scheduler import create_nhl_scheduler, schedule_initial_sync
 from app.routers import health, hockey
+from app.services.api_sports import close_api_sports_client
 from app.services.redis_store import connect_redis, disconnect_redis
 
 logging.basicConfig(level=logging.INFO)
@@ -42,6 +43,7 @@ async def lifespan(application: FastAPI):
 
     if scheduler is not None:
         scheduler.shutdown(wait=False)
+    await close_api_sports_client()
     await disconnect_redis()
 
 

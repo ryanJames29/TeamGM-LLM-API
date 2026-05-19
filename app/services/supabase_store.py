@@ -1,10 +1,11 @@
 import asyncio
 import logging
-from typing import Any
+from typing import cast
 
 from supabase import Client, create_client
 
 from app.config import Settings
+from app.types import JsonObject
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class SupabaseStore:
     def enabled(self) -> bool:
         return self._client is not None
 
-    async def upsert_team_records(self, season: int, rows: list[dict[str, Any]]) -> None:
+    async def upsert_team_records(self, season: int, rows: list[JsonObject]) -> None:
         if not self._client or not rows:
             return
 
@@ -41,18 +42,27 @@ class SupabaseStore:
         await asyncio.to_thread(_write)
         logger.info("Upserted %s NHL team records for season %s", len(payload), season)
 
-    async def load_records_map(self, season: int) -> dict[int, str]:
+    async def load_records_map(self, season: int) -> dict[int, JsonObject]:
         if not self._client:
             return {}
 
-        def _read() -> list[dict[str, Any]]:
+        def _read() -> list[JsonObject]:
             response = (
                 self._client.table(TABLE_TEAM_RECORDS)
-                .select("team_id, record")
+                .select("team_id, team_name, record, standing, position")
                 .eq("season", season)
                 .execute()
             )
-            return response.data or []
+            return cast(list[JsonObject], response.data or [])
 
         rows = await asyncio.to_thread(_read)
-        return {int(row["team_id"]): str(row["record"]) for row in rows if row.get("team_id")}
+        return {
+            int(row["team_id"]): {
+                "record": str(row.get("record") or "—"),
+                "standing": str(row["standing"]) if row.get("standing") is not None else None,
+                "position": int(row["position"]) if row.get("position") is not None else None,
+                "teamName": str(row.get("team_name") or ""),
+            }
+            for row in rows
+            if row.get("team_id") is not None
+        }

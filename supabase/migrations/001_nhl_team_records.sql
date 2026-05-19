@@ -9,6 +9,7 @@ create table if not exists public.nhl_team_records (
   losses integer not null default 0,
   ot_losses integer not null default 0,
   record text not null,
+  standing text,
   points integer,
   position integer,
   updated_at timestamptz not null default now(),
@@ -19,6 +20,9 @@ create index if not exists nhl_team_records_season_idx
   on public.nhl_team_records (season);
 
 alter table public.nhl_team_records enable row level security;
+
+alter table public.nhl_team_records
+  add column if not exists standing text;
 
 -- Service role bypasses RLS; block anonymous reads by default.
 create policy "nhl_team_records_service_only"

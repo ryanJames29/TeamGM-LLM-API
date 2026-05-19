@@ -1,9 +1,10 @@
 import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import TypedDict
 
 from app.services.api_sports import ApiSportsClient
+from app.types import JsonObject, JsonValue
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,13 @@ NHL_TEAM_ABBREVIATIONS: dict[str, str] = {
 }
 
 
+class TeamStanding(TypedDict, total=False):
+    record: str
+    standing: str | None
+    position: int | None
+    teamName: str | None
+
+
 def _team_abbreviation(name: str) -> str:
     if name in NHL_TEAM_ABBREVIATIONS:
         return NHL_TEAM_ABBREVIATIONS[name]
@@ -58,7 +66,7 @@ def _team_abbreviation(name: str) -> str:
     return (parts[-1][:3] if parts else name[:3]).upper()
 
 
-def _format_record(games: dict[str, Any]) -> str:
+def _format_record(games: JsonObject) -> str:
     wins = games.get("win", {}).get("total", 0)
     losses = games.get("lose", {}).get("total", 0)
     otl = games.get("lose_overtime", {}).get("total", 0)
@@ -101,7 +109,7 @@ def _format_remaining_clock(remaining_seconds: int) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-def _normalize_timer(timer: Any, *, status_short: str = "") -> str | None:
+def _normalize_timer(timer: JsonValue, *, status_short: str = "") -> str | None:
     period_seconds = _PERIOD_LENGTH_MINUTES.get(status_short, 20) * 60
 
     if timer is None:
@@ -154,7 +162,7 @@ def _period_abbrev(status_short: str, status_long: str) -> str | None:
     return None
 
 
-def _period_label(status_short: str, status_long: str, timer: Any) -> str | None:
+def _period_label(status_short: str, status_long: str, timer: JsonValue) -> str | None:
     if status_short in _CANCELLED:
         return status_long or "Cancelled"
     if status_short in _FINAL:
@@ -182,15 +190,15 @@ def _period_label(status_short: str, status_long: str, timer: Any) -> str | None
 
 
 def _map_team(
-    team: dict[str, Any],
+    team: JsonObject,
     score: int | None,
-    standings: dict[int, dict[str, Any]],
+    standings: dict[int, TeamStanding],
     *,
     is_scheduled: bool,
-) -> dict[str, Any]:
+) -> JsonObject:
     team_id = team.get("id")
     name = team.get("name", "Unknown")
-    info: dict[str, Any] = {}
+    info: TeamStanding = {}
     if team_id is not None:
         raw_info = standings.get(int(team_id), "—")
         if isinstance(raw_info, str):
@@ -207,7 +215,7 @@ def _map_team(
     }
 
 
-def map_game(raw: dict[str, Any], standings: dict[int, dict[str, Any]]) -> dict[str, Any]:
+def map_game(raw: JsonObject, standings: dict[int, TeamStanding]) -> JsonObject:
     status_short = raw.get("status", {}).get("short", "NS")
     status_long = raw.get("status", {}).get("long", "")
     game_status = _map_status(status_short)
@@ -229,7 +237,7 @@ def map_game(raw: dict[str, Any], standings: dict[int, dict[str, Any]]) -> dict[
     }
 
 
-def get_current_season(league_payload: dict[str, Any]) -> int:
+def get_current_season(league_payload: JsonObject) -> int:
     seasons = league_payload.get("seasons") or []
     for season in seasons:
         if season.get("current"):
@@ -239,7 +247,7 @@ def get_current_season(league_payload: dict[str, Any]) -> int:
     raise ValueError("No seasons found for NHL league")
 
 
-async def fetch_nhl_league(client: ApiSportsClient) -> dict[str, Any]:
+async def fetch_nhl_league(client: ApiSportsClient) -> JsonObject:
     payload = await client.get_hockey("leagues", {"id": NHL_LEAGUE_ID})
     rows = payload.get("response") or []
     if not rows:
@@ -247,8 +255,8 @@ async def fetch_nhl_league(client: ApiSportsClient) -> dict[str, Any]:
     return rows[0]
 
 
-def _flatten_standings_response(response: list[Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+def _flatten_standings_response(response: list[JsonValue]) -> list[JsonObject]:
+    rows: list[JsonObject] = []
     for item in response:
         if isinstance(item, list):
             rows.extend(item)
@@ -265,7 +273,7 @@ def _ordinal(position: int) -> str:
     return f"{position}{suffix}"
 
 
-def _format_standing_label(row: dict[str, Any]) -> str | None:
+def _format_standing_label(row: JsonObject) -> str | None:
     position = row.get("position")
     if position is None:
         return None
@@ -291,7 +299,7 @@ def _format_standing_label(row: dict[str, Any]) -> str | None:
     return label
 
 
-def _standings_info_from_row(row: dict[str, Any]) -> dict[str, Any]:
+def _standings_info_from_row(row: JsonObject) -> TeamStanding:
     team = row.get("team") or {}
     games = row.get("games") or {}
     return {
@@ -302,7 +310,7 @@ def _standings_info_from_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _pick_standings_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _pick_standings_row(rows: list[JsonObject]) -> JsonObject | None:
     if not rows:
         return None
 
@@ -324,16 +332,16 @@ def _pick_standings_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return max(pool, key=lambda row: (row.get("games") or {}).get("played", 0))
 
 
-def parse_standings_by_team(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
+def parse_standings_by_team(payload: JsonObject) -> dict[int, TeamStanding]:
     """One standings row per team (regular-season division when available)."""
-    rows_by_team: dict[int, list[dict[str, Any]]] = {}
+    rows_by_team: dict[int, list[JsonObject]] = {}
     for row in _flatten_standings_response(payload.get("response") or []):
         team = row.get("team") or {}
         team_id = team.get("id")
         if team_id is not None:
             rows_by_team.setdefault(int(team_id), []).append(row)
 
-    standings: dict[int, dict[str, Any]] = {}
+    standings: dict[int, TeamStanding] = {}
     for team_id, team_rows in rows_by_team.items():
         best_row = _pick_standings_row(team_rows)
         if best_row is not None:
@@ -341,7 +349,7 @@ def parse_standings_by_team(payload: dict[str, Any]) -> dict[int, dict[str, Any]
     return standings
 
 
-def parse_standings_records(payload: dict[str, Any]) -> dict[int, str]:
+def parse_standings_records(payload: JsonObject) -> dict[int, str]:
     return {
         team_id: info["record"]
         for team_id, info in parse_standings_by_team(payload).items()
@@ -363,7 +371,7 @@ async def fetch_games_for_date(
     client: ApiSportsClient,
     season: int,
     game_date: date,
-) -> list[dict[str, Any]]:
+) -> list[JsonObject]:
     payload = await client.get_hockey(
         "games",
         {
@@ -382,7 +390,7 @@ async def fetch_nhl_games_window(
     center: date,
     lookback_days: int = 7,
     lookahead_days: int = 3,
-) -> list[dict[str, Any]]:
+) -> list[JsonObject]:
     start = center - timedelta(days=lookback_days)
     end = center + timedelta(days=lookahead_days)
     dates = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
@@ -391,7 +399,7 @@ async def fetch_nhl_games_window(
         *[fetch_games_for_date(client, season, d) for d in dates]
     )
 
-    by_id: dict[int, dict[str, Any]] = {}
+    by_id: dict[int, JsonObject] = {}
     for batch in batches:
         for game in batch:
             game_id = game.get("id")

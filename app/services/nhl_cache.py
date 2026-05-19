@@ -1,23 +1,22 @@
 """Redis keys and read helpers for NHL data served to clients."""
 
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
 
 from app.config import Settings
-from app.services.nhl import _LIVE, _SCHEDULED, map_game
+from app.services.nhl import TeamStanding, _LIVE, _SCHEDULED, map_game
 from app.services.redis_store import redis_get_json, redis_hgetall_json, safe_redis_get_json
+from app.types import JsonObject, JsonValue
 
 KEY_LEAGUE_META = "nhl:league:meta"
 KEY_RECORDS_PREFIX = "nhl:records:"
 KEY_RAW_GAMES_HASH = "nhl:raw_games"
-KEY_SCORES_PAYLOAD = "nhl:scores:payload"
 KEY_GAME_STATS_PREFIX = "nhl:game_stats:"
 KEY_SYNC_STATUS = "nhl:sync:status"
 
 _STATUS_SORT_ORDER = {"live": 0, "scheduled": 1, "final": 2}
 
 
-def _scheduled_timestamp(game: dict[str, Any]) -> float:
+def _scheduled_timestamp(game: JsonObject) -> float:
     raw = game.get("scheduledAt")
     if not raw:
         return 0.0
@@ -27,10 +26,10 @@ def _scheduled_timestamp(game: dict[str, Any]) -> float:
         return 0.0
 
 
-def sort_scoreboard_games(games: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def sort_scoreboard_games(games: list[JsonObject]) -> list[JsonObject]:
     """Live games first, then upcoming, then finals."""
 
-    def sort_key(game: dict[str, Any]) -> tuple[int, float]:
+    def sort_key(game: JsonObject) -> tuple[int, float]:
         status = str(game.get("status", "final"))
         priority = _STATUS_SORT_ORDER.get(status, 3)
         timestamp = _scheduled_timestamp(game)
@@ -49,7 +48,7 @@ def game_stats_key(game_id: int | str) -> str:
     return f"{KEY_GAME_STATS_PREFIX}{game_id}"
 
 
-def _parse_game_date(raw_game: dict[str, Any]) -> date | None:
+def _parse_game_date(raw_game: JsonObject) -> date | None:
     raw = raw_game.get("date")
     if not raw:
         return None
@@ -59,12 +58,12 @@ def _parse_game_date(raw_game: dict[str, Any]) -> date | None:
         return None
 
 
-def _is_live_raw(raw_game: dict[str, Any]) -> bool:
+def _is_live_raw(raw_game: JsonObject) -> bool:
     short = (raw_game.get("status") or {}).get("short", "")
     return short in _LIVE
 
 
-def _team_ids(raw_game: dict[str, Any]) -> set[int]:
+def _team_ids(raw_game: JsonObject) -> set[int]:
     teams = raw_game.get("teams") or {}
     ids: set[int] = set()
     for side in ("home", "away"):
@@ -74,16 +73,16 @@ def _team_ids(raw_game: dict[str, Any]) -> set[int]:
     return ids
 
 
-def _is_scheduled_raw(raw_game: dict[str, Any]) -> bool:
+def _is_scheduled_raw(raw_game: JsonObject) -> bool:
     short = (raw_game.get("status") or {}).get("short", "")
     return short in _SCHEDULED
 
 
 def filter_games_for_scoreboard(
-    raw_games: list[dict[str, Any]],
+    raw_games: list[JsonObject],
     *,
     today: date,
-) -> list[dict[str, Any]]:
+) -> list[JsonObject]:
     """
     Scoreboard view (UTC):
       1. All of today's games (live, final, scheduled) plus any still-live from earlier.
@@ -93,7 +92,7 @@ def filter_games_for_scoreboard(
     """
     tomorrow = today + timedelta(days=1)
     playing_today: set[int] = set()
-    today_games: list[dict[str, Any]] = []
+    today_games: list[JsonObject] = []
 
     for game in raw_games:
         if _is_live_raw(game):
@@ -106,7 +105,7 @@ def filter_games_for_scoreboard(
             playing_today |= _team_ids(game)
 
     today_ids = {game.get("id") for game in today_games}
-    tomorrow_rest: list[dict[str, Any]] = []
+    tomorrow_rest: list[JsonObject] = []
 
     for game in raw_games:
         if game.get("id") in today_ids:
@@ -121,16 +120,16 @@ def filter_games_for_scoreboard(
 
 
 def filter_games_in_window(
-    raw_games: list[dict[str, Any]],
+    raw_games: list[JsonObject],
     center: date,
     *,
     lookback_days: int,
     lookahead_days: int,
-) -> list[dict[str, Any]]:
+) -> list[JsonObject]:
     start = center - timedelta(days=lookback_days)
     end = center + timedelta(days=lookahead_days)
 
-    in_window: list[dict[str, Any]] = []
+    in_window: list[JsonObject] = []
     for game in raw_games:
         game_date = _parse_game_date(game)
         if game_date is None:
@@ -145,12 +144,12 @@ def filter_games_in_window(
     )
 
 
-async def load_team_standings(season: int) -> dict[int, dict[str, Any]]:
+async def load_team_standings(season: int) -> dict[int, TeamStanding]:
     raw = await redis_get_json(records_key(season))
     if not isinstance(raw, dict):
         return {}
 
-    standings: dict[int, dict[str, Any]] = {}
+    standings: dict[int, TeamStanding] = {}
     for key, value in raw.items():
         team_id = int(key)
         if isinstance(value, str):
@@ -164,10 +163,8 @@ async def build_scores_payload_from_cache(
     settings: Settings,
     *,
     center: date | None = None,
-) -> dict[str, Any] | None:
+) -> JsonObject | None:
     """Assemble the mobile scores payload from Redis only (no API-Sports)."""
-    # Always map from raw games so live timer/period labels stay current (never
-    # return a stale pre-mapped KEY_SCORES_PAYLOAD snapshot).
     center_date = center or datetime.now(timezone.utc).date()
     league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
     if not league_meta:
