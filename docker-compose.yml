@@ -1,0 +1,13 @@
+# Local Redis for NHL cache + job coordination (free, open source).
+# Start: docker compose up -d
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - teamgm_redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+volumes:
+  teamgm_redis_data:
