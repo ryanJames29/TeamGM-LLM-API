@@ -20,11 +20,11 @@ from app.services.api_sports import ApiSportsClient
 from app.services.nhl import (
     NHL_LEAGUE_ID,
     _LIVE,
-    _flatten_standings_response,
     fetch_games_for_date,
     fetch_nhl_games_window,
     fetch_nhl_league,
     get_current_season,
+    parse_standings_by_team,
     parse_standings_records,
 )
 from app.services.nhl_cache import (
@@ -45,28 +45,25 @@ _job_lock = asyncio.Lock()
 _last_window_refresh: float = 0.0
 
 
-def _standings_rows(records: dict[int, str], raw_response: list[Any]) -> list[dict[str, Any]]:
-    """Flatten API standings into rows for Supabase."""
+def _standings_rows(standings_by_team: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rows for Supabase (one per team, regular-season division)."""
     rows: list[dict[str, Any]] = []
-    for row in _flatten_standings_response(raw_response):
-        team = row.get("team") or {}
-        team_id = team.get("id")
-        if team_id is None:
-            continue
-        games = row.get("games") or {}
-        wins = games.get("win", {}).get("total", 0)
-        losses = games.get("lose", {}).get("total", 0)
-        otl = games.get("lose_overtime", {}).get("total", 0)
+    for team_id, info in standings_by_team.items():
+        record = info.get("record", "—")
+        parts = record.split("-")
+        wins = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+        losses = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        otl = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         rows.append(
             {
                 "team_id": team_id,
-                "team_name": team.get("name", "Unknown"),
+                "team_name": info.get("teamName", "Unknown"),
                 "wins": wins,
                 "losses": losses,
                 "ot_losses": otl,
-                "record": records.get(team_id, f"{wins}-{losses}-{otl}"),
-                "points": row.get("points"),
-                "position": row.get("position"),
+                "record": record,
+                "points": None,
+                "position": info.get("position"),
             }
         )
     return rows
@@ -97,7 +94,8 @@ async def sync_nhl_standings(settings: Settings) -> None:
         "standings",
         {"league": NHL_LEAGUE_ID, "season": season},
     )
-    records = parse_standings_records(standings_payload)
+    standings_by_team = parse_standings_by_team(standings_payload)
+    records = {team_id: info["record"] for team_id, info in standings_by_team.items()}
 
     await redis_set_json(
         KEY_LEAGUE_META,
@@ -112,11 +110,14 @@ async def sync_nhl_standings(settings: Settings) -> None:
             "updatedAt": datetime.now(timezone.utc).isoformat(),
         },
     )
-    await redis_set_json(records_key(season), {str(k): v for k, v in records.items()})
+    await redis_set_json(
+        records_key(season),
+        {str(team_id): info for team_id, info in standings_by_team.items()},
+    )
 
     if supabase.enabled:
         try:
-            rows = _standings_rows(records, standings_payload.get("response") or [])
+            rows = _standings_rows(standings_by_team)
             await supabase.upsert_team_records(season, rows)
         except Exception:
             logger.exception(

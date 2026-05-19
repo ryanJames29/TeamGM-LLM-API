@@ -19,11 +19,11 @@ def test_map_game_live_with_clock_and_period():
     game = map_game(raw, records)
 
     assert game["status"] == "live"
-    assert game["periodLabel"] == "12:34 - 3rd"
+    assert game["periodLabel"] == "7:26 - 3rd"
 
 
 def test_map_game_live_api_sports_minutes_timer():
-    """API-Sports sends timer as whole minutes without a colon (e.g. '11')."""
+    """API-Sports timer is elapsed minutes in the period (11 → 9:00 left in a 20-min period)."""
     raw = {
         "id": 425583,
         "date": "2026-05-18T23:30:00+00:00",
@@ -39,7 +39,7 @@ def test_map_game_live_api_sports_minutes_timer():
 
     game = map_game(raw, {})
 
-    assert game["periodLabel"] == "11:00 - 2nd"
+    assert game["periodLabel"] == "9:00 - 2nd"
 
 
 def test_map_game_live_period_only():
@@ -61,6 +61,26 @@ def test_map_game_live_period_only():
     assert game["status"] == "live"
     assert game["periodLabel"] == "1st"
     assert game["awayTeam"]["score"] == 1
+
+
+def test_map_game_break_time_shows_intermission():
+    raw = {
+        "id": 5,
+        "date": "2026-05-18T23:30:00+00:00",
+        "timer": None,
+        "status": {"short": "BT", "long": "Break Time"},
+        "teams": {
+            "away": {"id": 10, "name": "Boston Bruins"},
+            "home": {"id": 20, "name": "Toronto Maple Leafs"},
+        },
+        "scores": {"away": 1, "home": 1},
+        "week": None,
+    }
+
+    game = map_game(raw, {})
+
+    assert game["status"] == "live"
+    assert game["periodLabel"] == "Intermission"
 
 
 def test_map_game_scheduled_hides_scores():

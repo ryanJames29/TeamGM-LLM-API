@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from app.config import Settings
-from app.services.nhl import map_game
+from app.services.nhl import _LIVE, _SCHEDULED, map_game
 from app.services.redis_store import redis_get_json, redis_hgetall_json, safe_redis_get_json
 
 KEY_LEAGUE_META = "nhl:league:meta"
@@ -59,6 +59,67 @@ def _parse_game_date(raw_game: dict[str, Any]) -> date | None:
         return None
 
 
+def _is_live_raw(raw_game: dict[str, Any]) -> bool:
+    short = (raw_game.get("status") or {}).get("short", "")
+    return short in _LIVE
+
+
+def _team_ids(raw_game: dict[str, Any]) -> set[int]:
+    teams = raw_game.get("teams") or {}
+    ids: set[int] = set()
+    for side in ("home", "away"):
+        team_id = (teams.get(side) or {}).get("id")
+        if team_id is not None:
+            ids.add(int(team_id))
+    return ids
+
+
+def _is_scheduled_raw(raw_game: dict[str, Any]) -> bool:
+    short = (raw_game.get("status") or {}).get("short", "")
+    return short in _SCHEDULED
+
+
+def filter_games_for_scoreboard(
+    raw_games: list[dict[str, Any]],
+    *,
+    today: date,
+) -> list[dict[str, Any]]:
+    """
+    Scoreboard view (UTC):
+      1. All of today's games (live, final, scheduled) plus any still-live from earlier.
+      2. Tomorrow's scheduled games where neither team plays today.
+
+    The 7+3 day window stays in Redis for other features; this only shapes the list.
+    """
+    tomorrow = today + timedelta(days=1)
+    playing_today: set[int] = set()
+    today_games: list[dict[str, Any]] = []
+
+    for game in raw_games:
+        if _is_live_raw(game):
+            today_games.append(game)
+            playing_today |= _team_ids(game)
+            continue
+
+        if _parse_game_date(game) == today:
+            today_games.append(game)
+            playing_today |= _team_ids(game)
+
+    today_ids = {game.get("id") for game in today_games}
+    tomorrow_rest: list[dict[str, Any]] = []
+
+    for game in raw_games:
+        if game.get("id") in today_ids:
+            continue
+        if _parse_game_date(game) != tomorrow or not _is_scheduled_raw(game):
+            continue
+        team_ids = _team_ids(game)
+        if team_ids and team_ids.isdisjoint(playing_today):
+            tomorrow_rest.append(game)
+
+    return today_games + tomorrow_rest
+
+
 def filter_games_in_window(
     raw_games: list[dict[str, Any]],
     center: date,
@@ -84,11 +145,19 @@ def filter_games_in_window(
     )
 
 
-async def load_records(season: int) -> dict[int, str]:
-    records = await redis_get_json(records_key(season))
-    if not isinstance(records, dict):
+async def load_team_standings(season: int) -> dict[int, dict[str, Any]]:
+    raw = await redis_get_json(records_key(season))
+    if not isinstance(raw, dict):
         return {}
-    return {int(k): str(v) for k, v in records.items()}
+
+    standings: dict[int, dict[str, Any]] = {}
+    for key, value in raw.items():
+        team_id = int(key)
+        if isinstance(value, str):
+            standings[team_id] = {"record": value, "standing": None}
+        elif isinstance(value, dict):
+            standings[team_id] = value
+    return standings
 
 
 async def build_scores_payload_from_cache(
@@ -105,20 +174,15 @@ async def build_scores_payload_from_cache(
         return None
 
     season = int(league_meta["season"])
-    records = await load_records(season)
+    standings = await load_team_standings(season)
     try:
         raw_by_id = await redis_hgetall_json(KEY_RAW_GAMES_HASH)
     except RuntimeError:
         return None
     raw_games = list(raw_by_id.values())
 
-    window_games = filter_games_in_window(
-        raw_games,
-        center_date,
-        lookback_days=settings.nhl_window_lookback_days,
-        lookahead_days=settings.nhl_window_lookahead_days,
-    )
-    games = sort_scoreboard_games([map_game(g, records) for g in window_games])
+    scoreboard_raw = filter_games_for_scoreboard(raw_games, today=center_date)
+    games = sort_scoreboard_games([map_game(g, standings) for g in scoreboard_raw])
 
     # Attach stats when present in Redis (optional enrichment).
     for game in games:
