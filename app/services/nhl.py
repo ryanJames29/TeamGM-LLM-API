@@ -94,13 +94,32 @@ _PERIOD_ABBREV: dict[str, str] = {
 }
 
 # API-Sports hockey `timer` is elapsed time in the period (e.g. "11" = 11 minutes played).
+_REGULATION_PERIOD_MINUTES = 20
+_REGULAR_SEASON_OT_MINUTES = 5
+_PLAYOFF_OT_MINUTES = 20
+
 _PERIOD_LENGTH_MINUTES: dict[str, int] = {
-    "P1": 20,
-    "P2": 20,
-    "P3": 20,
-    "OT": 20,
-    "PT": 20,
+    "P1": _REGULATION_PERIOD_MINUTES,
+    "P2": _REGULATION_PERIOD_MINUTES,
+    "P3": _REGULATION_PERIOD_MINUTES,
 }
+
+# API-Sports `week` during playoffs: "Quarter-finals", "Semi-finals", etc.
+_PLAYOFF_WEEK_KEYWORDS = ("final", "playoff", "conference", "stanley", "round")
+
+
+def _is_playoff_game(raw: JsonObject) -> bool:
+    week = raw.get("week")
+    if not isinstance(week, str) or not week.strip():
+        return False
+    lower = week.strip().lower()
+    return any(keyword in lower for keyword in _PLAYOFF_WEEK_KEYWORDS)
+
+
+def _period_length_minutes(status_short: str, *, is_playoff: bool) -> int:
+    if status_short in ("OT", "PT"):
+        return _PLAYOFF_OT_MINUTES if is_playoff else _REGULAR_SEASON_OT_MINUTES
+    return _PERIOD_LENGTH_MINUTES.get(status_short, _REGULATION_PERIOD_MINUTES)
 
 
 def _format_remaining_clock(remaining_seconds: int) -> str:
@@ -109,8 +128,13 @@ def _format_remaining_clock(remaining_seconds: int) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-def _normalize_timer(timer: JsonValue, *, status_short: str = "") -> str | None:
-    period_seconds = _PERIOD_LENGTH_MINUTES.get(status_short, 20) * 60
+def _normalize_timer(
+    timer: JsonValue,
+    *,
+    status_short: str = "",
+    is_playoff: bool = False,
+) -> str | None:
+    period_seconds = _period_length_minutes(status_short, is_playoff=is_playoff) * 60
 
     if timer is None:
         return None
@@ -151,7 +175,7 @@ def _period_abbrev(status_short: str, status_long: str) -> str | None:
     long_lower = (status_long or "").lower()
     if "shootout" in long_lower:
         return "SO"
-    if "overtime" in long_lower:
+    if "overtime" in long_lower or "over time" in long_lower:
         return "OT"
     if "first" in long_lower:
         return "1st"
@@ -162,7 +186,13 @@ def _period_abbrev(status_short: str, status_long: str) -> str | None:
     return None
 
 
-def _period_label(status_short: str, status_long: str, timer: JsonValue) -> str | None:
+def _period_label(
+    status_short: str,
+    status_long: str,
+    timer: JsonValue,
+    *,
+    is_playoff: bool = False,
+) -> str | None:
     if status_short in _CANCELLED:
         return status_long or "Cancelled"
     if status_short in _FINAL:
@@ -175,7 +205,7 @@ def _period_label(status_short: str, status_long: str, timer: JsonValue) -> str 
         return "Intermission"
 
     period = _period_abbrev(status_short, status_long)
-    clock = _normalize_timer(timer, status_short=status_short)
+    clock = _normalize_timer(timer, status_short=status_short, is_playoff=is_playoff)
 
     if status_short in _LIVE or period or clock:
         if clock and period:
@@ -229,7 +259,12 @@ def map_game(raw: JsonObject, standings: dict[int, TeamStanding]) -> JsonObject:
         "id": str(raw.get("id")),
         "league": "nhl",
         "status": game_status,
-        "periodLabel": _period_label(status_short, status_long, raw.get("timer")),
+        "periodLabel": _period_label(
+            status_short,
+            status_long,
+            raw.get("timer"),
+            is_playoff=_is_playoff_game(raw),
+        ),
         "scheduledAt": raw.get("date"),
         "venue": raw.get("week") or "",
         "awayTeam": _map_team(away, scores.get("away"), standings, is_scheduled=is_scheduled),
