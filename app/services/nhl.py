@@ -1,7 +1,6 @@
 import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
-from time import monotonic
 from typing import Any
 
 from app.services.api_sports import ApiSportsClient
@@ -9,15 +8,11 @@ from app.services.api_sports import ApiSportsClient
 logger = logging.getLogger(__name__)
 
 NHL_LEAGUE_ID = 57
-NHL_GAMES_CACHE_TTL_SECONDS = 45
-
 # API-Sports status.short values
 _SCHEDULED = frozenset({"NS", "TBD"})
 _LIVE = frozenset({"P1", "P2", "P3", "OT", "PT", "BT", "LIVE"})
 _FINAL = frozenset({"FT", "AP", "AOT", "PEN", "AW", "WO"})
 _CANCELLED = frozenset({"CANC", "ABD"})
-
-_nhl_scores_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 NHL_TEAM_ABBREVIATIONS: dict[str, str] = {
     "Anaheim Ducks": "ANA",
@@ -81,18 +76,103 @@ def _map_status(short: str) -> str:
     return "scheduled"
 
 
-def _period_label(status_short: str, status_long: str, timer: str | None) -> str | None:
+_PERIOD_ABBREV: dict[str, str] = {
+    "P1": "1st",
+    "P2": "2nd",
+    "P3": "3rd",
+    "OT": "OT",
+    "PT": "OT",
+    "SO": "SO",
+}
+
+# API-Sports hockey timer is usually whole minutes remaining in the period (e.g. "11" → 11:00).
+_PERIOD_LENGTH_MINUTES: dict[str, int] = {
+    "P1": 20,
+    "P2": 20,
+    "P3": 20,
+    "OT": 20,
+    "PT": 20,
+}
+
+
+def _normalize_timer(timer: Any, *, status_short: str = "") -> str | None:
+    if timer is None:
+        return None
+    if isinstance(timer, dict):
+        minutes = timer.get("minutes", timer.get("minute"))
+        seconds = timer.get("seconds", timer.get("second"))
+        if minutes is not None and seconds is not None:
+            return f"{int(minutes)}:{int(seconds):02d}"
+        return None
+
+    text = str(timer).strip()
+    if not text:
+        return None
+
+    if ":" in text:
+        parts = text.split(":", 1)
+        try:
+            minutes = int(parts[0])
+            seconds = int(parts[1])
+            return f"{minutes}:{seconds:02d}"
+        except ValueError:
+            return text
+
+    if text.isdigit():
+        value = int(text)
+        if value <= 0:
+            return None
+        period_cap = _PERIOD_LENGTH_MINUTES.get(status_short, 20)
+        # Whole minutes left in period (typical API-Sports hockey shape).
+        if value <= period_cap:
+            return f"{value}:00"
+        # Fallback: treat as seconds remaining (e.g. 47 → 0:47).
+        if value < 60:
+            return f"0:{value:02d}"
+        return f"{value // 60}:{value % 60:02d}"
+
+    return None
+
+
+def _period_abbrev(status_short: str, status_long: str) -> str | None:
+    if status_short in _PERIOD_ABBREV:
+        return _PERIOD_ABBREV[status_short]
+
+    long_lower = (status_long or "").lower()
+    if "shootout" in long_lower:
+        return "SO"
+    if "overtime" in long_lower:
+        return "OT"
+    if "first" in long_lower:
+        return "1st"
+    if "second" in long_lower:
+        return "2nd"
+    if "third" in long_lower:
+        return "3rd"
+    return None
+
+
+def _period_label(status_short: str, status_long: str, timer: Any) -> str | None:
     if status_short in _CANCELLED:
         return status_long or "Cancelled"
     if status_short in _FINAL:
         return "Final"
     if status_short in _SCHEDULED:
         return None
-    if timer and ":" in str(timer):
-        return str(timer)
-    if status_short in _LIVE:
-        return status_long
-    return status_long
+
+    period = _period_abbrev(status_short, status_long)
+    clock = _normalize_timer(timer, status_short=status_short)
+
+    if status_short in _LIVE or period or clock:
+        if clock and period:
+            return f"{clock} - {period}"
+        if clock:
+            return clock
+        if period:
+            return period
+        return status_long or "Live"
+
+    return status_long or None
 
 
 def _map_team(
@@ -154,6 +234,27 @@ async def fetch_nhl_league(client: ApiSportsClient) -> dict[str, Any]:
     return rows[0]
 
 
+def _flatten_standings_response(response: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in response:
+        if isinstance(item, list):
+            rows.extend(item)
+        elif isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def parse_standings_records(payload: dict[str, Any]) -> dict[int, str]:
+    records: dict[int, str] = {}
+    for row in _flatten_standings_response(payload.get("response") or []):
+        team = row.get("team") or {}
+        team_id = team.get("id")
+        games = row.get("games")
+        if team_id is not None and games:
+            records[team_id] = _format_record(games)
+    return records
+
+
 async def fetch_standings_records(
     client: ApiSportsClient,
     season: int,
@@ -162,23 +263,7 @@ async def fetch_standings_records(
         "standings",
         {"league": NHL_LEAGUE_ID, "season": season},
     )
-    records: dict[int, str] = {}
-    response = payload.get("response") or []
-
-    rows: list[dict[str, Any]] = []
-    for item in response:
-        if isinstance(item, list):
-            rows.extend(item)
-        elif isinstance(item, dict):
-            rows.append(item)
-
-    for row in rows:
-        team = row.get("team") or {}
-        team_id = team.get("id")
-        games = row.get("games")
-        if team_id is not None and games:
-            records[team_id] = _format_record(games)
-    return records
+    return parse_standings_records(payload)
 
 
 async def fetch_games_for_date(
@@ -227,35 +312,3 @@ async def fetch_nhl_games_window(
     )
 
 
-async def build_nhl_scores_payload(
-    client: ApiSportsClient,
-    *,
-    game_date: date | None = None,
-) -> dict[str, Any]:
-    center = game_date or datetime.now(timezone.utc).date()
-    cache_key = center.isoformat()
-    now = monotonic()
-    cached = _nhl_scores_cache.get(cache_key)
-    if cached and (now - cached[0]) < NHL_GAMES_CACHE_TTL_SECONDS:
-        return cached[1]
-
-    league = await fetch_nhl_league(client)
-    season = get_current_season(league)
-    records = await fetch_standings_records(client, season)
-    raw_games = await fetch_nhl_games_window(client, season=season, center=center)
-    games = [map_game(g, records) for g in raw_games]
-
-    payload = {
-        "status": "ok",
-        "league": {
-            "id": league.get("id"),
-            "name": league.get("name"),
-            "logo": league.get("logo"),
-            "season": season,
-        },
-        "date": center.isoformat(),
-        "message": f"Fetched {len(games)} NHL games.",
-        "games": games,
-    }
-    _nhl_scores_cache[cache_key] = (now, payload)
-    return payload

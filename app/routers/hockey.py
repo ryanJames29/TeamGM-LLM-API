@@ -5,58 +5,35 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.config import Settings, get_settings
-from app.services.api_sports import ApiSportsClient
-from app.services.nhl import build_nhl_scores_payload, fetch_nhl_league, get_current_season
+from app.services.nhl_cache import (
+    KEY_LEAGUE_META,
+    KEY_RAW_GAMES_HASH,
+    KEY_SCORES_PAYLOAD,
+    KEY_SYNC_STATUS,
+    build_scores_payload_from_cache,
+)
+from app.services.redis_store import safe_redis_get_json, safe_redis_hlen
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/hockey", tags=["hockey"])
 
 
-def get_api_sports_client(
-    settings: Settings = Depends(get_settings),
-) -> ApiSportsClient:
-    return ApiSportsClient(settings)
-
-
-@router.get("/leagues")
-async def list_leagues(
-    client: ApiSportsClient = Depends(get_api_sports_client),
-) -> dict[str, Any]:
-    """Proxy to API-Sports GET /leagues (validates API_SPORTS_KEY)."""
-    logger.info("Hockey leagues — request received from client")
-    payload = await client.get_hockey("leagues")
-    response_list = payload.get("response") or []
-    return {
-        "status": "ok",
-        "message": f"Fetched {len(response_list)} hockey leagues from API-Sports.",
-        "results": payload.get("results"),
-        "leagues": response_list,
-    }
-
-
 @router.get("/nhl/league")
-async def get_nhl_league(
-    client: ApiSportsClient = Depends(get_api_sports_client),
-) -> dict[str, Any]:
-    """NHL league metadata (API-Sports league id 57)."""
-    logger.info("NHL league — request received from client")
-    try:
-        league = await fetch_nhl_league(client)
-        season = get_current_season(league)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+async def get_nhl_league() -> dict[str, Any]:
+    """NHL league metadata from Redis (updated hourly by background job)."""
+    meta = await safe_redis_get_json(KEY_LEAGUE_META)
+    if not meta:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="NHL metadata not ready yet. Wait for the standings sync job.",
+        )
 
     return {
         "status": "ok",
-        "league": {
-            "id": league.get("id"),
-            "name": league.get("name"),
-            "logo": league.get("logo"),
-            "country": league.get("country"),
-            "season": season,
-            "seasons": league.get("seasons"),
-        },
+        "source": "cache",
+        "league": meta.get("league"),
+        "updatedAt": meta.get("updatedAt"),
     }
 
 
@@ -67,10 +44,15 @@ async def get_nhl_games(
         alias="date",
         description="Center date (YYYY-MM-DD). Defaults to today (UTC).",
     ),
-    client: ApiSportsClient = Depends(get_api_sports_client),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """NHL games for a date window with scores mapped for the mobile app."""
-    logger.info("NHL games — request received from client")
+    """
+    NHL scores for the mobile app.
+
+    Reads from Redis only — zero API-Sports calls per request.
+    Data is refreshed by background jobs (minute scores, hourly standings).
+    """
+    logger.info("NHL games — serving from cache")
     game_date: date | None = None
     if date_param is not None:
         try:
@@ -81,7 +63,37 @@ async def get_nhl_games(
                 detail="date must be YYYY-MM-DD",
             ) from exc
 
-    try:
-        return await build_nhl_scores_payload(client, game_date=game_date)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    payload = await build_scores_payload_from_cache(settings, center=game_date)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "NHL scores cache is empty. Ensure Redis is running, ENABLE_NHL_JOBS=true, "
+                "and API_SPORTS_KEY is set so background jobs can populate data."
+            ),
+        )
+
+    return payload
+
+
+@router.get("/nhl/sync-status")
+async def get_nhl_sync_status() -> dict[str, Any]:
+    """Operational status for NHL background jobs (dev / monitoring)."""
+    status_payload = await safe_redis_get_json(KEY_SYNC_STATUS)
+    meta = await safe_redis_get_json(KEY_LEAGUE_META)
+
+    raw_games_count = await safe_redis_hlen(KEY_RAW_GAMES_HASH)
+    cached_payload = await safe_redis_get_json(KEY_SCORES_PAYLOAD)
+    scores_game_count: int | None = None
+    if isinstance(cached_payload, dict) and isinstance(cached_payload.get("games"), list):
+        scores_game_count = len(cached_payload["games"])
+
+    return {
+        "status": "ok",
+        "sync": status_payload if isinstance(status_payload, dict) else {},
+        "leagueMetaReady": meta is not None,
+        "cache": {
+            "rawGamesInRedis": raw_games_count,
+            "scoresPayloadGameCount": scores_game_count,
+        },
+    }

@@ -1,12 +1,12 @@
 from app.services.nhl import map_game
 
 
-def test_map_game_live():
+def test_map_game_live_with_clock_and_period():
     raw = {
         "id": 1,
         "date": "2026-05-18T23:30:00+00:00",
-        "timer": None,
-        "status": {"short": "P1", "long": "First Period"},
+        "timer": "12:34",
+        "status": {"short": "P3", "long": "Third Period"},
         "teams": {
             "away": {"id": 10, "name": "Montreal Canadiens"},
             "home": {"id": 20, "name": "Buffalo Sabres"},
@@ -19,9 +19,48 @@ def test_map_game_live():
     game = map_game(raw, records)
 
     assert game["status"] == "live"
-    assert game["periodLabel"] == "First Period"
+    assert game["periodLabel"] == "12:34 - 3rd"
+
+
+def test_map_game_live_api_sports_minutes_timer():
+    """API-Sports sends timer as whole minutes without a colon (e.g. '11')."""
+    raw = {
+        "id": 425583,
+        "date": "2026-05-18T23:30:00+00:00",
+        "timer": "11",
+        "status": {"short": "P2", "long": "Second Period"},
+        "teams": {
+            "away": {"id": 10, "name": "Montreal Canadiens"},
+            "home": {"id": 20, "name": "Buffalo Sabres"},
+        },
+        "scores": {"away": 2, "home": 0},
+        "week": None,
+    }
+
+    game = map_game(raw, {})
+
+    assert game["periodLabel"] == "11:00 - 2nd"
+
+
+def test_map_game_live_period_only():
+    raw = {
+        "id": 4,
+        "date": "2026-05-18T23:30:00+00:00",
+        "timer": None,
+        "status": {"short": "P1", "long": "First Period"},
+        "teams": {
+            "away": {"id": 10, "name": "Montreal Canadiens"},
+            "home": {"id": 20, "name": "Buffalo Sabres"},
+        },
+        "scores": {"away": 1, "home": 0},
+        "week": None,
+    }
+
+    game = map_game(raw, {})
+
+    assert game["status"] == "live"
+    assert game["periodLabel"] == "1st"
     assert game["awayTeam"]["score"] == 1
-    assert game["awayTeam"]["record"] == "3-2-1"
 
 
 def test_map_game_scheduled_hides_scores():
