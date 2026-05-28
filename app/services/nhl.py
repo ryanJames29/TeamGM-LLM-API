@@ -89,7 +89,7 @@ _PERIOD_ABBREV: dict[str, str] = {
     "P2": "2nd",
     "P3": "3rd",
     "OT": "OT",
-    "PT": "OT",
+    "PT": "SO",
     "SO": "SO",
 }
 
@@ -117,9 +117,87 @@ def _is_playoff_game(raw: JsonObject) -> bool:
 
 
 def _period_length_minutes(status_short: str, *, is_playoff: bool) -> int:
-    if status_short in ("OT", "PT"):
+    if status_short == "OT":
         return _PLAYOFF_OT_MINUTES if is_playoff else _REGULAR_SEASON_OT_MINUTES
     return _PERIOD_LENGTH_MINUTES.get(status_short, _REGULATION_PERIOD_MINUTES)
+
+
+def _periods_object(raw: JsonObject) -> JsonObject | None:
+    periods = raw.get("periods")
+    return periods if isinstance(periods, dict) else None
+
+
+def _regulation_periods_completed(periods: JsonObject | None) -> int:
+    if not periods:
+        return 0
+    return sum(1 for key in ("first", "second", "third") if periods.get(key) is not None)
+
+
+def _overtime_has_started(periods: JsonObject | None) -> bool:
+    return bool(periods and periods.get("overtime") is not None)
+
+
+def _is_shootout_status(status_short: str, status_long: str) -> bool:
+    if status_short == "PT":
+        return True
+    long_lower = (status_long or "").lower()
+    return "penalt" in long_lower or "shootout" in long_lower
+
+
+def _is_intermission(
+    status_short: str,
+    status_long: str,
+    periods: JsonObject | None,
+) -> bool:
+    long_lower = (status_long or "").lower()
+    if status_short == "BT" or "break" in long_lower:
+        return True
+
+    # API-Sports sometimes reports OT before the overtime period line exists (pre-OT break).
+    if status_short == "OT" and not _is_shootout_status(status_short, status_long):
+        if _regulation_periods_completed(periods) >= 3 and not _overtime_has_started(periods):
+            return True
+
+    return False
+
+
+def _clock_status_short(status_short: str, period: str | None) -> str:
+    """Use regulation period length when API-Sports mislabels P2/P3 as OT."""
+    if status_short not in ("OT", "PT") or not period:
+        return status_short
+
+    if period == "1st":
+        return "P1"
+    if period == "2nd":
+        return "P2"
+    if period == "3rd":
+        return "P3"
+    return status_short
+
+
+def _correct_period_abbrev(
+    status_short: str,
+    status_long: str,
+    periods: JsonObject | None,
+) -> str | None:
+    if _is_shootout_status(status_short, status_long):
+        return "SO"
+
+    if status_short in _PERIOD_ABBREV and status_short not in ("OT", "PT"):
+        return _PERIOD_ABBREV[status_short]
+
+    if status_short == "OT":
+        if not _overtime_has_started(periods):
+            completed = _regulation_periods_completed(periods)
+            if completed >= 3:
+                return None
+            if completed == 2:
+                return "3rd"
+            if completed == 1:
+                return "2nd"
+        return "OT"
+
+    return _period_abbrev(status_short, status_long)
 
 
 def _format_remaining_clock(remaining_seconds: int) -> str:
@@ -191,6 +269,7 @@ def _period_label(
     status_long: str,
     timer: JsonValue,
     *,
+    periods: JsonObject | None = None,
     is_playoff: bool = False,
 ) -> str | None:
     if status_short in _CANCELLED:
@@ -200,12 +279,12 @@ def _period_label(
     if status_short in _SCHEDULED:
         return None
 
-    long_lower = (status_long or "").lower()
-    if status_short == "BT" or "break" in long_lower:
+    if _is_intermission(status_short, status_long, periods):
         return "Intermission"
 
-    period = _period_abbrev(status_short, status_long)
-    clock = _normalize_timer(timer, status_short=status_short, is_playoff=is_playoff)
+    period = _correct_period_abbrev(status_short, status_long, periods)
+    clock_status = _clock_status_short(status_short, period)
+    clock = _normalize_timer(timer, status_short=clock_status, is_playoff=is_playoff)
 
     if status_short in _LIVE or period or clock:
         if clock and period:
@@ -263,6 +342,7 @@ def map_game(raw: JsonObject, standings: dict[int, TeamStanding]) -> JsonObject:
             status_short,
             status_long,
             raw.get("timer"),
+            periods=_periods_object(raw),
             is_playoff=_is_playoff_game(raw),
         ),
         "scheduledAt": raw.get("date"),

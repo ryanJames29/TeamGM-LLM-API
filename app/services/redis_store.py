@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from redis.asyncio import Redis
-from redis.exceptions import LockError, LockNotOwnedError
+from redis.exceptions import LockError, LockNotOwnedError, RedisError
 
 from app.config import Settings
 from app.types import JsonObject, JsonValue
@@ -19,8 +19,13 @@ NHL_SYNC_LOCK_PREFIX = "nhl:sync:lock:"
 async def connect_redis(settings: Settings) -> Redis:
     global _redis
     if _redis is None:
-        _redis = Redis.from_url(settings.redis_url, decode_responses=True)
-        await _redis.ping()
+        client = Redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            await client.ping()
+        except RedisError:
+            await client.aclose()
+            raise
+        _redis = client
         logger.info("Connected to Redis at %s", settings.redis_url)
     return _redis
 
@@ -79,14 +84,21 @@ async def redis_get_json(key: str) -> JsonValue | None:
 async def safe_redis_get_json(key: str) -> JsonValue | None:
     try:
         return await redis_get_json(key)
-    except RuntimeError:
+    except (RuntimeError, RedisError):
         return None
 
 
 async def safe_redis_hlen(hash_key: str) -> int | None:
     try:
         return int(await get_redis().hlen(hash_key))
-    except (RuntimeError, TypeError, ValueError):
+    except (RuntimeError, RedisError, TypeError, ValueError):
+        return None
+
+
+async def safe_redis_hgetall_json(hash_key: str) -> dict[str, JsonValue] | None:
+    try:
+        return await redis_hgetall_json(hash_key)
+    except (RuntimeError, RedisError):
         return None
 
 

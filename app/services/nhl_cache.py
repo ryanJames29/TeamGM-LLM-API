@@ -4,7 +4,11 @@ from datetime import date, datetime, timedelta, timezone
 
 from app.config import Settings
 from app.services.nhl import TeamStanding, _LIVE, _SCHEDULED, map_game
-from app.services.redis_store import redis_get_json, redis_hgetall_json, safe_redis_get_json
+from app.services.redis_store import (
+    redis_get_json,
+    safe_redis_get_json,
+    safe_redis_hgetall_json,
+)
 from app.types import JsonObject, JsonValue
 
 KEY_LEAGUE_META = "nhl:league:meta"
@@ -78,6 +82,15 @@ def _is_scheduled_raw(raw_game: JsonObject) -> bool:
     return short in _SCHEDULED
 
 
+def _is_yesterday_or_today_live(raw_game: JsonObject, today: date) -> bool:
+    """Only trust live status for games from yesterday or today (handles midnight spillover)."""
+    game_date = _parse_game_date(raw_game)
+    if game_date is None:
+        return False
+    yesterday = today - timedelta(days=1)
+    return yesterday <= game_date <= today
+
+
 def filter_games_for_scoreboard(
     raw_games: list[JsonObject],
     *,
@@ -95,7 +108,7 @@ def filter_games_for_scoreboard(
     today_games: list[JsonObject] = []
 
     for game in raw_games:
-        if _is_live_raw(game):
+        if _is_live_raw(game) and _is_yesterday_or_today_live(game, today):
             today_games.append(game)
             playing_today |= _team_ids(game)
             continue
@@ -172,9 +185,8 @@ async def build_scores_payload_from_cache(
 
     season = int(league_meta["season"])
     standings = await load_team_standings(season)
-    try:
-        raw_by_id = await redis_hgetall_json(KEY_RAW_GAMES_HASH)
-    except RuntimeError:
+    raw_by_id = await safe_redis_hgetall_json(KEY_RAW_GAMES_HASH)
+    if raw_by_id is None:
         return None
     raw_games = list(raw_by_id.values())
 

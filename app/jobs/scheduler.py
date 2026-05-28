@@ -11,6 +11,9 @@ from app.services.nhl_jobs import (
     _sync_nhl_games_window,
     _sync_nhl_scores_minute,
     _sync_nhl_standings,
+    sync_nhl_games_window,
+    sync_nhl_scores_minute,
+    sync_nhl_standings,
 )
 from app.services.redis_store import nhl_sync_lock
 
