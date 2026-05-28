@@ -59,3 +59,25 @@ def test_scoreboard_includes_live_even_from_previous_day():
     result = filter_games_for_scoreboard(games, today=today)
 
     assert [g["id"] for g in result] == [5]
+
+
+def test_scoreboard_excludes_stale_live_from_old_dates():
+    today = date(2026, 5, 28)
+    games = [
+        {
+            "id": 425583,
+            "date": "2026-05-18T23:30:00+00:00",
+            "status": {"short": "OT", "long": "Over Time"},
+            "teams": _teams(674, 688),
+        },
+        {
+            "id": 425602,
+            "date": f"{today.isoformat()}T23:30:00+00:00",
+            "status": {"short": "BT", "long": "Break Time"},
+            "teams": _teams(10, 20),
+        },
+    ]
+
+    result = filter_games_for_scoreboard(games, today=today)
+
+    assert [g["id"] for g in result] == [425602]

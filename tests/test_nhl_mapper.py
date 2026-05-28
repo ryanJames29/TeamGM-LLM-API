@@ -111,6 +111,13 @@ def test_map_game_live_overtime_five_minute_period():
         "date": "2026-05-18T23:30:00+00:00",
         "timer": "4",
         "status": {"short": "OT", "long": "Overtime"},
+        "periods": {
+            "first": "1-0",
+            "second": "0-1",
+            "third": "1-0",
+            "overtime": "0-0",
+            "penalties": None,
+        },
         "teams": {
             "away": {"id": 10, "name": "Montreal Canadiens"},
             "home": {"id": 20, "name": "Buffalo Sabres"},
@@ -131,6 +138,13 @@ def test_map_game_live_playoff_overtime_twenty_minute_period():
         "date": "2026-05-18T23:30:00+00:00",
         "timer": "11",
         "status": {"short": "OT", "long": "Over Time"},
+        "periods": {
+            "first": "0-2",
+            "second": "1-0",
+            "third": "1-0",
+            "overtime": "0-0",
+            "penalties": None,
+        },
         "teams": {
             "away": {"id": 688, "name": "Montreal Canadiens"},
             "home": {"id": 674, "name": "Buffalo Sabres"},
@@ -142,6 +156,86 @@ def test_map_game_live_playoff_overtime_twenty_minute_period():
     game = map_game(raw, {})
 
     assert game["periodLabel"] == "9:00 - OT"
+
+
+def test_map_game_mislabeled_ot_during_third_period():
+    """API-Sports sometimes sends OT while the 3rd period is in progress."""
+    raw = {
+        "id": 425602,
+        "date": "2026-05-28T23:30:00+00:00",
+        "timer": "11",
+        "status": {"short": "OT", "long": "Over Time"},
+        "periods": {
+            "first": "0-3",
+            "second": "0-0",
+            "third": None,
+            "overtime": None,
+            "penalties": None,
+        },
+        "teams": {
+            "away": {"id": 10, "name": "Montreal Canadiens"},
+            "home": {"id": 20, "name": "Buffalo Sabres"},
+        },
+        "scores": {"away": 3, "home": 0},
+        "week": "Semi-finals",
+    }
+
+    game = map_game(raw, {})
+
+    assert game["periodLabel"] == "9:00 - 3rd"
+
+
+def test_map_game_pre_overtime_intermission():
+    """Tied after regulation: intermission before OT, even if status.short is OT."""
+    raw = {
+        "id": 100,
+        "date": "2026-05-18T23:30:00+00:00",
+        "timer": None,
+        "status": {"short": "OT", "long": "Over Time"},
+        "periods": {
+            "first": "1-0",
+            "second": "0-1",
+            "third": "1-0",
+            "overtime": None,
+            "penalties": None,
+        },
+        "teams": {
+            "away": {"id": 10, "name": "Montreal Canadiens"},
+            "home": {"id": 20, "name": "Buffalo Sabres"},
+        },
+        "scores": {"away": 2, "home": 2},
+        "week": "Quarter-finals",
+    }
+
+    game = map_game(raw, {})
+
+    assert game["periodLabel"] == "Intermission"
+
+
+def test_map_game_penalties_time_is_shootout():
+    raw = {
+        "id": 101,
+        "date": "2026-05-18T23:30:00+00:00",
+        "timer": None,
+        "status": {"short": "PT", "long": "Penalties Time"},
+        "periods": {
+            "first": "1-0",
+            "second": "0-1",
+            "third": "1-0",
+            "overtime": "0-0",
+            "penalties": "0-0",
+        },
+        "teams": {
+            "away": {"id": 10, "name": "Montreal Canadiens"},
+            "home": {"id": 20, "name": "Buffalo Sabres"},
+        },
+        "scores": {"away": 2, "home": 2},
+        "week": None,
+    }
+
+    game = map_game(raw, {})
+
+    assert game["periodLabel"] == "SO"
 
 
 def test_map_game_cancelled():
