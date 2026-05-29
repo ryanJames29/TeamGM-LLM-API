@@ -53,14 +53,14 @@ class ApiSportsClient:
             )
         return key.strip()
 
-    async def get_hockey(
+    async def _get(
         self,
+        base_url: str,
         path: str,
         params: Mapping[str, object] | None = None,
     ) -> JsonObject:
         api_key = self._require_key()
-        base = self._settings.api_sports_hockey_base_url.rstrip("/")
-        url = f"{base}/{path.lstrip('/')}"
+        url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
         headers = {"x-apisports-key": api_key}
 
         try:
@@ -106,3 +106,17 @@ class ApiSportsClient:
             )
 
         return parsed_payload
+
+    async def get_hockey(
+        self,
+        path: str,
+        params: Mapping[str, object] | None = None,
+    ) -> JsonObject:
+        return await self._get(self._settings.api_sports_hockey_base_url, path, params)
+
+    async def get_baseball(
+        self,
+        path: str,
+        params: Mapping[str, object] | None = None,
+    ) -> JsonObject:
+        return await self._get(self._settings.api_sports_baseball_base_url, path, params)

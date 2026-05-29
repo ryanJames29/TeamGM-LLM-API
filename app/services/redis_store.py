@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 _redis: Redis | None = None
 
 NHL_SYNC_LOCK_PREFIX = "nhl:sync:lock:"
+MLB_SYNC_LOCK_PREFIX = "mlb:sync:lock:"
 
 
 async def connect_redis(settings: Settings) -> Redis:
@@ -72,6 +73,32 @@ async def nhl_sync_lock(job_name: str, ttl_seconds: int) -> AsyncIterator[bool]:
                 await lock.release()
             except LockNotOwnedError:
                 logger.warning("NHL lock %s was not owned on release (expired?)", job_name)
+
+
+@asynccontextmanager
+async def mlb_sync_lock(job_name: str, ttl_seconds: int) -> AsyncIterator[bool]:
+    """Distributed lock so only one API worker runs a given MLB background job."""
+    redis = get_redis()
+    lock = redis.lock(f"{MLB_SYNC_LOCK_PREFIX}{job_name}", timeout=ttl_seconds)
+    acquired = False
+    try:
+        acquired = await lock.acquire(blocking=False)
+    except LockError:
+        acquired = False
+
+    if not acquired:
+        logger.info("Skipping MLB job %s — lock held by another API instance", job_name)
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        if acquired:
+            try:
+                await lock.release()
+            except LockNotOwnedError:
+                logger.warning("MLB lock %s was not owned on release (expired?)", job_name)
 
 
 async def redis_get_json(key: str) -> JsonValue | None:
