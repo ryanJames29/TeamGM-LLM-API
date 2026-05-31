@@ -315,13 +315,16 @@ def _map_team(
         elif isinstance(raw_info, dict):
             info = raw_info
 
-    return {
+    mapped: JsonObject = {
         "name": name,
         "abbreviation": _team_abbreviation(name),
         "record": info.get("record", "—"),
         "standing": info.get("standing"),
         "score": None if is_scheduled else score,
     }
+    if team_id is not None:
+        mapped["id"] = int(team_id)
+    return mapped
 
 
 def map_game(raw: JsonObject, standings: dict[int, TeamStanding]) -> JsonObject:

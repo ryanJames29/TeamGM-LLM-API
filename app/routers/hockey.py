@@ -4,7 +4,8 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.config import Settings, get_settings
-from app.schemas.hockey import NhlLeagueResponse, NhlScoresResponse, NhlSyncStatusResponse
+from app.schemas.hockey import NhlGameDetailResponse, NhlLeagueResponse, NhlScoresResponse, NhlSyncStatusResponse
+from app.services.nhl_detail import build_nhl_game_detail
 from app.services.nhl_cache import (
     KEY_LEAGUE_META,
     KEY_RAW_GAMES_HASH,
@@ -72,6 +73,21 @@ async def get_nhl_games(
             ),
         )
 
+    return payload
+
+
+@router.get("/nhl/games/{game_id}", response_model=NhlGameDetailResponse)
+async def get_nhl_game_detail(
+    game_id: str,
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Single NHL game — box score, team stats, and scoring events."""
+    payload = await build_nhl_game_detail(settings, game_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"NHL game {game_id} not found.",
+        )
     return payload
 
 

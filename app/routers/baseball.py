@@ -4,7 +4,8 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.config import Settings, get_settings
-from app.schemas.baseball import MlbLeagueResponse, MlbScoresResponse, MlbSyncStatusResponse
+from app.schemas.baseball import MlbGameDetailResponse, MlbLeagueResponse, MlbScoresResponse, MlbSyncStatusResponse
+from app.services.mlb_detail import build_mlb_game_detail
 from app.services.mlb_cache import (
     KEY_LEAGUE_META,
     KEY_RAW_GAMES_HASH,
@@ -67,6 +68,21 @@ async def get_mlb_games(
             ),
         )
 
+    return payload
+
+
+@router.get("/mlb/games/{game_id}", response_model=MlbGameDetailResponse)
+async def get_mlb_game_detail(
+    game_id: str,
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Single MLB game — inning box score and season team stats."""
+    payload = await build_mlb_game_detail(settings, game_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"MLB game {game_id} not found.",
+        )
     return payload
 
 

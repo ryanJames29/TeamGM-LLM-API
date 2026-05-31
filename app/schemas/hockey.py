@@ -16,11 +16,14 @@ class NhlLeagueResponse(BaseModel):
 
 
 class NhlTeamScore(BaseModel):
+    id: int | None = None
     name: str
     abbreviation: str
     record: str
     standing: str | None = None
     score: int | None = None
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class NhlGame(BaseModel):
@@ -67,3 +70,28 @@ class NhlSyncStatusResponse(BaseModel):
     sync: NhlSyncStatus
     leagueMetaReady: bool
     cache: NhlSyncCacheStatus
+
+
+class NhlGameEvent(BaseModel):
+    period: str | None = None
+    minute: str | None = None
+    type: str | None = None
+    comment: str | None = None
+    teamName: str | None = None
+    players: list[str] = []
+    assists: list[str] = []
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class NhlGameDetailResponse(BaseModel):
+    status: str
+    source: str
+    game: NhlGame
+    boxScore: dict[str, object]
+    teamStats: dict[str, object | None]
+    events: list[NhlGameEvent] = []
+    playerStatsAvailable: bool = False
+    message: str | None = None
+
+    model_config = ConfigDict(extra="ignore")

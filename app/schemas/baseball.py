@@ -16,11 +16,14 @@ class MlbLeagueResponse(BaseModel):
 
 
 class MlbTeamScore(BaseModel):
+    id: int | None = None
     name: str
     abbreviation: str
     record: str
     standing: str | None = None
     score: int | None = None
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class MlbGame(BaseModel):
@@ -67,3 +70,16 @@ class MlbSyncStatusResponse(BaseModel):
     sync: MlbSyncStatus
     leagueMetaReady: bool
     cache: MlbSyncCacheStatus
+
+
+class MlbGameDetailResponse(BaseModel):
+    status: str
+    source: str
+    game: MlbGame
+    boxScore: dict[str, object]
+    teamStats: dict[str, object | None]
+    events: list[dict[str, object]] = []
+    playerStatsAvailable: bool = False
+    message: str | None = None
+
+    model_config = ConfigDict(extra="ignore")
