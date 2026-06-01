@@ -18,9 +18,7 @@ RESPONSE_SCHEMA = """{
   },
   "recentPerformance": {
     "headline": string,
-    "summary": string,
-    "wentRight": string,
-    "wentWrong": string
+    "lastGameSummary": string
   }
 }"""
 
@@ -37,15 +35,13 @@ CONCERN_LEVEL = """Rate how worried a fan should feel about the team right now.
 - description: one short sentence explaining the rating.
 - Base it on recent results, standings, headToHead when present, and any injury/trend signals in the facts."""
 
-PLAYER_TRENDS = """Highlight players trending up or down when the facts support it.
+PLAYER_TRENDS = """Highlight team trending up or down when the facts support it. Look at last 10 games, etc..
 - stockUp / stockDown: up to 2 items each with name and a short stat line.
-- Do come up with top team performers in ERA and batting average for the current season for the users favorite team."""
+- Do NOT come up with palyer trends, only team trends."""
 
-RECENT_PERFORMANCE = """Recap the team's latest stretch from recentGames (and headToHead when relevant).
-- headline: punchy one-liner on recent form.
-- summary: one sentence overview.
-- wentRight / wentWrong: one sentence each on what is working and what is not."""
-
+RECENT_PERFORMANCE = """Summarize the team's most recent completed game from recentGames.
+- headline: punchy one-liner about the last result.
+- lastGameSummary: 1-2 sentences summarizing the last game (opponent, score, and 1 key factor) using only provided facts."""
 
 @dataclass(frozen=True)
 class HomeInsightSectionPrompt:

@@ -24,9 +24,7 @@ class PlayerTrendsInsight(BaseModel):
 
 class RecentPerformanceInsight(BaseModel):
     headline: str
-    summary: str
-    wentRight: str
-    wentWrong: str
+    lastGameSummary: str
 
 
 class TeamHomeInsight(BaseModel):
