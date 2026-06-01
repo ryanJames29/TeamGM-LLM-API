@@ -40,8 +40,11 @@ PLAYER_TRENDS = """Highlight team trending up or down when the facts support it.
 - Do NOT come up with palyer trends, only team trends."""
 
 RECENT_PERFORMANCE = """Summarize the team's most recent completed game from recentGames.
-- headline: punchy one-liner about the last result.
-- lastGameSummary: 1-2 sentences summarizing the last game (opponent, score, and 1 key factor) using only provided facts."""
+- headline: punchy one-liner about the last result. Do NOT include the score.
+- lastGameSummary: 2-4 sentences summarizing the last game (score and key factors) using only provided facts. Try not to repeat too much information from what is already provided.
+- Do NOT come up with a recent performance, only summarize the last game.
+- If teams names is in the headline, do NOT include it in the lastGameSummary."""
+
 
 @dataclass(frozen=True)
 class HomeInsightSectionPrompt:

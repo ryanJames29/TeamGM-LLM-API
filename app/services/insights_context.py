@@ -6,15 +6,17 @@ from app.config import Settings
 from app.services.h2h import load_head_to_head
 from app.services.mlb_cache import (
     KEY_LEAGUE_META as MLB_LEAGUE_META,
-    build_scores_payload_from_cache as build_mlb_scores,
+    KEY_RAW_GAMES_HASH as MLB_RAW_GAMES_HASH,
     load_team_standings as load_mlb_standings,
 )
+from app.services.mlb import map_game as map_mlb_game
 from app.services.nhl_cache import (
     KEY_LEAGUE_META as NHL_LEAGUE_META,
-    build_scores_payload_from_cache as build_nhl_scores,
+    KEY_RAW_GAMES_HASH as NHL_RAW_GAMES_HASH,
     load_team_standings as load_nhl_standings,
 )
-from app.services.redis_store import safe_redis_get_json
+from app.services.nhl import map_game as map_nhl_game
+from app.services.redis_store import safe_redis_get_json, safe_redis_hgetall_json
 from app.types import JsonObject
 
 
@@ -66,18 +68,34 @@ def _summarize_mapped_game(game: JsonObject, team_id: int) -> JsonObject:
 
 
 async def _load_mapped_games(settings: Settings, league: str) -> list[JsonObject]:
+    """
+    Load the full Redis window (7+3 day) and map it to the app shape.
+
+    We intentionally do NOT use the scoreboard-shaped payload here, because scoreboard filtering
+    is date-sensitive and can omit the most recent final in some timezones.
+    """
     if league == "nhl":
-        payload = await build_nhl_scores(settings)
+        meta = await safe_redis_get_json(NHL_LEAGUE_META)
+        standings = await load_nhl_standings(int(meta["season"])) if meta else {}
+        raw_by_id = await safe_redis_hgetall_json(NHL_RAW_GAMES_HASH)
+        mapper = map_nhl_game
     elif league == "mlb":
-        payload = await build_mlb_scores(settings)
+        meta = await safe_redis_get_json(MLB_LEAGUE_META)
+        standings = await load_mlb_standings(int(meta["season"])) if meta else {}
+        raw_by_id = await safe_redis_hgetall_json(MLB_RAW_GAMES_HASH)
+        mapper = map_mlb_game
     else:
         return []
 
-    if not payload:
+    if raw_by_id is None:
         return []
 
-    games = payload.get("games")
-    return games if isinstance(games, list) else []
+    raw_games = list(raw_by_id.values())
+    mapped: list[JsonObject] = []
+    for raw in raw_games:
+        if isinstance(raw, dict):
+            mapped.append(mapper(raw, standings))
+    return mapped
 
 
 async def build_facts_for_favorite(

@@ -50,12 +50,14 @@ def game_stats_key(game_id: int | str) -> str:
     return f"{KEY_GAME_STATS_PREFIX}{game_id}"
 
 
-def _parse_game_date(raw_game: JsonObject) -> date | None:
+def _parse_game_date(raw_game: JsonObject, *, tz_offset_minutes: int = 0) -> date | None:
     raw = raw_game.get("date")
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        local = dt + timedelta(minutes=tz_offset_minutes)
+        return local.date()
     except ValueError:
         return None
 
@@ -80,8 +82,13 @@ def _is_scheduled_raw(raw_game: JsonObject) -> bool:
     return short in _SCHEDULED
 
 
-def _is_yesterday_or_today_live(raw_game: JsonObject, today: date) -> bool:
-    game_date = _parse_game_date(raw_game)
+def _is_yesterday_or_today_live(
+    raw_game: JsonObject,
+    today: date,
+    *,
+    tz_offset_minutes: int = 0,
+) -> bool:
+    game_date = _parse_game_date(raw_game, tz_offset_minutes=tz_offset_minutes)
     if game_date is None:
         return False
     yesterday = today - timedelta(days=1)
@@ -92,18 +99,23 @@ def filter_games_for_scoreboard(
     raw_games: list[JsonObject],
     *,
     today: date,
+    tz_offset_minutes: int = 0,
 ) -> list[JsonObject]:
     tomorrow = today + timedelta(days=1)
     playing_today: set[int] = set()
     today_games: list[JsonObject] = []
 
     for game in raw_games:
-        if _is_live_raw(game) and _is_yesterday_or_today_live(game, today):
+        if _is_live_raw(game) and _is_yesterday_or_today_live(
+            game,
+            today,
+            tz_offset_minutes=tz_offset_minutes,
+        ):
             today_games.append(game)
             playing_today |= _team_ids(game)
             continue
 
-        if _parse_game_date(game) == today:
+        if _parse_game_date(game, tz_offset_minutes=tz_offset_minutes) == today:
             today_games.append(game)
             playing_today |= _team_ids(game)
 
@@ -113,7 +125,10 @@ def filter_games_for_scoreboard(
     for game in raw_games:
         if game.get("id") in today_ids:
             continue
-        if _parse_game_date(game) != tomorrow or not _is_scheduled_raw(game):
+        if (
+            _parse_game_date(game, tz_offset_minutes=tz_offset_minutes) != tomorrow
+            or not _is_scheduled_raw(game)
+        ):
             continue
         team_ids = _team_ids(game)
         if team_ids and team_ids.isdisjoint(playing_today):
@@ -141,8 +156,10 @@ async def build_scores_payload_from_cache(
     settings: Settings,
     *,
     center: date | None = None,
+    tz_offset_minutes: int = 0,
 ) -> JsonObject | None:
-    center_date = center or datetime.now(timezone.utc).date()
+    now_local = datetime.now(timezone.utc) + timedelta(minutes=tz_offset_minutes)
+    center_date = center or now_local.date()
     league_meta = await safe_redis_get_json(KEY_LEAGUE_META)
     if not league_meta:
         return None
@@ -154,7 +171,11 @@ async def build_scores_payload_from_cache(
         return None
     raw_games = list(raw_by_id.values())
 
-    scoreboard_raw = filter_games_for_scoreboard(raw_games, today=center_date)
+    scoreboard_raw = filter_games_for_scoreboard(
+        raw_games,
+        today=center_date,
+        tz_offset_minutes=tz_offset_minutes,
+    )
     games = sort_scoreboard_games([map_game(g, standings) for g in scoreboard_raw])
 
     for game in games:
