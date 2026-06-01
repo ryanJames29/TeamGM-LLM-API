@@ -48,6 +48,10 @@ async def get_mlb_games(
         default=0,
         description="User timezone offset in minutes (UTC->local). Example: -360 for MDT.",
     ),
+    view: str = Query(
+        default="scoreboard",
+        description='Game list view: "scoreboard" (default) or "window" (full cache window).',
+    ),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
     """MLB scores for the mobile app — Redis only, no API-Sports per request."""
@@ -66,6 +70,7 @@ async def get_mlb_games(
         settings,
         center=game_date,
         tz_offset_minutes=tz_offset_minutes,
+        view=view,
     )
     if payload is None:
         raise HTTPException(

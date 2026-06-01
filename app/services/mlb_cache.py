@@ -157,6 +157,7 @@ async def build_scores_payload_from_cache(
     *,
     center: date | None = None,
     tz_offset_minutes: int = 0,
+    view: str = "scoreboard",
 ) -> JsonObject | None:
     now_local = datetime.now(timezone.utc) + timedelta(minutes=tz_offset_minutes)
     center_date = center or now_local.date()
@@ -171,12 +172,16 @@ async def build_scores_payload_from_cache(
         return None
     raw_games = list(raw_by_id.values())
 
-    scoreboard_raw = filter_games_for_scoreboard(
-        raw_games,
-        today=center_date,
-        tz_offset_minutes=tz_offset_minutes,
-    )
-    games = sort_scoreboard_games([map_game(g, standings) for g in scoreboard_raw])
+    if view == "window":
+        mapped = [map_game(g, standings) for g in raw_games]
+        games = sort_scoreboard_games(mapped)
+    else:
+        scoreboard_raw = filter_games_for_scoreboard(
+            raw_games,
+            today=center_date,
+            tz_offset_minutes=tz_offset_minutes,
+        )
+        games = sort_scoreboard_games([map_game(g, standings) for g in scoreboard_raw])
 
     for game in games:
         stats = await safe_redis_get_json(game_stats_key(game["id"]))
