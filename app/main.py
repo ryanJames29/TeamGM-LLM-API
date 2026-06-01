@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.jobs.mlb_scheduler import create_mlb_scheduler, schedule_initial_mlb_sync
 from app.jobs.scheduler import create_nhl_scheduler, schedule_initial_sync
-from app.routers import baseball, health, hockey
+from app.routers import baseball, health, hockey, insights
 from app.services.api_sports import close_api_sports_client
 from app.services.redis_store import connect_redis, disconnect_redis
 
@@ -96,6 +96,7 @@ def create_app() -> FastAPI:
     application.include_router(health.router, prefix="/api/v1")
     application.include_router(hockey.router, prefix="/api/v1")
     application.include_router(baseball.router, prefix="/api/v1")
+    application.include_router(insights.router, prefix="/api/v1")
 
     return application
 
