@@ -1,13 +1,6 @@
 from pydantic import BaseModel, Field
 
 
-class UpcomingGameInsight(BaseModel):
-    team: str
-    opponent: str
-    time: str
-    location: str
-
-
 class BriefingInsight(BaseModel):
     team: str
     summary: str
@@ -40,12 +33,25 @@ class TeamHomeInsight(BaseModel):
     teamKey: str
     league: str
     teamName: str
-    upcomingGame: UpcomingGameInsight
     whyItMatters: list[str]
     briefing: BriefingInsight
     concernLevel: ConcernLevelInsight
     playerTrends: PlayerTrendsInsight
     recentPerformance: RecentPerformanceInsight
+
+
+class NextGameSummary(BaseModel):
+    id: int | None = None
+    status: str | None = None
+    scheduledAt: str | None = None
+    periodLabel: str | None = None
+    venue: str | None = None
+    teamScore: int | None = None
+    opponentScore: int | None = None
+    opponentName: str | None = None
+    opponentAbbreviation: str | None = None
+    opponentApiSportsTeamId: int | None = None
+    location: str | None = None
 
 
 class HomeInsightsResponse(BaseModel):
@@ -54,3 +60,4 @@ class HomeInsightsResponse(BaseModel):
     factsAsOf: str | None = None
     source: str
     insight: TeamHomeInsight
+    nextGame: NextGameSummary | None = None

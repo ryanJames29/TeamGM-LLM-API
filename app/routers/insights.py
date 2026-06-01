@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.config import Settings, get_settings
-from app.schemas.insights import HomeInsightsResponse, TeamHomeInsight
+from app.schemas.insights import HomeInsightsResponse, NextGameSummary, TeamHomeInsight
 from app.services.insights_context import (
     FavoriteTeamContext,
     build_facts_for_favorite,
@@ -36,6 +36,10 @@ def _response_from_snapshot(snapshot: JsonObject) -> HomeInsightsResponse:
         )
 
     insight = _insight_from_payload(payload["insight"])
+    next_game = payload.get("nextGame")
+    next_game_summary = (
+        NextGameSummary.model_validate(next_game) if isinstance(next_game, dict) else None
+    )
     generated_at = str(snapshot.get("generated_at") or payload.get("generatedAt") or "")
     facts_as_of = snapshot.get("facts_as_of")
     if facts_as_of is not None:
@@ -47,6 +51,7 @@ def _response_from_snapshot(snapshot: JsonObject) -> HomeInsightsResponse:
         factsAsOf=facts_as_of,
         source="cache",
         insight=insight,
+        nextGame=next_game_summary,
     )
 
 
@@ -140,9 +145,11 @@ async def generate_home_insights(
 
     generated_at = datetime.now(timezone.utc).isoformat()
     facts_as_of = str(facts.get("asOf") or generated_at)
+    next_game = facts.get("nextGame") if isinstance(facts.get("nextGame"), dict) else None
     payload: JsonObject = {
         "generatedAt": generated_at,
         "factsAsOf": facts_as_of,
+        "nextGame": next_game,
         "insight": insight.model_dump(),
     }
 
@@ -159,4 +166,5 @@ async def generate_home_insights(
         factsAsOf=facts_as_of,
         source="openai",
         insight=insight,
+        nextGame=NextGameSummary.model_validate(next_game) if next_game else None,
     )
