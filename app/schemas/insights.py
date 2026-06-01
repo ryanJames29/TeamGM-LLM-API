@@ -12,16 +12,6 @@ class ConcernLevelInsight(BaseModel):
     description: str
 
 
-class PlayerTrendItem(BaseModel):
-    name: str
-    stat: str
-
-
-class PlayerTrendsInsight(BaseModel):
-    stockUp: list[PlayerTrendItem]
-    stockDown: list[PlayerTrendItem]
-
-
 class RecentPerformanceInsight(BaseModel):
     headline: str
     lastGameSummary: str
@@ -34,7 +24,6 @@ class TeamHomeInsight(BaseModel):
     whyItMatters: list[str]
     briefing: BriefingInsight
     concernLevel: ConcernLevelInsight
-    playerTrends: PlayerTrendsInsight
     recentPerformance: RecentPerformanceInsight
 
 

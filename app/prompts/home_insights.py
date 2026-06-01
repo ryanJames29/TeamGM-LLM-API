@@ -12,10 +12,6 @@ RESPONSE_SCHEMA = """{
   "whyItMatters": [string, ...],
   "briefing": {"team": string, "summary": string, "context": string},
   "concernLevel": {"level": integer 1-10, "description": string},
-  "playerTrends": {
-    "stockUp": [{"name": string, "stat": string}],
-    "stockDown": [{"name": string, "stat": string}]
-  },
   "recentPerformance": {
     "headline": string,
     "lastGameSummary": string
@@ -35,10 +31,6 @@ CONCERN_LEVEL = """Rate how worried a fan should feel about the team right now.
 - description: one short sentence explaining the rating.
 - Base it on recent results, standings, headToHead when present, and any injury/trend signals in the facts."""
 
-PLAYER_TRENDS = """Highlight team trending up or down when the facts support it. Look at last 10 games, etc..
-- stockUp / stockDown: up to 2 items each with name and a short stat line.
-- Do NOT come up with palyer trends, only team trends."""
-
 RECENT_PERFORMANCE = """Summarize the team's most recent completed game from recentGames.
 - headline: punchy one-liner about the last result. Do NOT include the score.
 - lastGameSummary: 2-4 sentences summarizing the last game (score and key factors) using only provided facts. Try not to repeat too much information from what is already provided.
@@ -56,7 +48,6 @@ HOME_INSIGHT_SECTIONS: tuple[HomeInsightSectionPrompt, ...] = (
     HomeInsightSectionPrompt("whyItMatters", WHY_IT_MATTERS),
     HomeInsightSectionPrompt("briefing", BRIEFING),
     HomeInsightSectionPrompt("concernLevel", CONCERN_LEVEL),
-    HomeInsightSectionPrompt("playerTrends", PLAYER_TRENDS),
     HomeInsightSectionPrompt("recentPerformance", RECENT_PERFORMANCE),
 )
 
