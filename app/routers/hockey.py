@@ -42,7 +42,15 @@ async def get_nhl_games(
     date_param: str | None = Query(
         default=None,
         alias="date",
-        description="Center date (YYYY-MM-DD). Defaults to today (UTC).",
+        description="Center date (YYYY-MM-DD) in the user's local timezone.",
+    ),
+    tz_offset_minutes: int = Query(
+        default=0,
+        description="User timezone offset in minutes (UTC->local). Example: -360 for MDT.",
+    ),
+    view: str = Query(
+        default="scoreboard",
+        description='Game list view: "scoreboard" (default) or "window" (full cache window).',
     ),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
@@ -63,7 +71,12 @@ async def get_nhl_games(
                 detail="date must be YYYY-MM-DD",
             ) from exc
 
-    payload = await build_scores_payload_from_cache(settings, center=game_date)
+    payload = await build_scores_payload_from_cache(
+        settings,
+        center=game_date,
+        tz_offset_minutes=tz_offset_minutes,
+        view=view,
+    )
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
