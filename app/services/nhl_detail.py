@@ -4,7 +4,7 @@ import logging
 
 from app.config import Settings
 from app.services.api_sports import ApiSportsClient
-from app.services.nhl import NHL_LEAGUE_ID, map_game
+from app.services.nhl import _LIVE, NHL_LEAGUE_ID, map_game
 from app.services.nhl_cache import (
     KEY_LEAGUE_META,
     KEY_RAW_GAMES_HASH,
@@ -12,6 +12,7 @@ from app.services.nhl_cache import (
 )
 from app.services.redis_store import (
     redis_hget_json,
+    redis_hmset_json,
     redis_set_json,
     safe_redis_get_json,
 )
@@ -47,8 +48,9 @@ def build_nhl_box_score(raw: JsonObject) -> JsonObject:
         if value is None:
             continue
         if isinstance(value, str) and "-" in value:
-            away, home = value.split("-", 1)
-            rows.append({"label": label, "away": int(away), "home": int(home)})
+            # Period lines are home-away; totals in scores.away / scores.home are away-home.
+            home_part, away_part = value.split("-", 1)
+            rows.append({"label": label, "away": int(away_part), "home": int(home_part)})
         else:
             rows.append({"label": label, "away": None, "home": None})
 
@@ -122,13 +124,21 @@ async def _load_team_stats(
         return None
 
 
+def _is_live_raw(raw: JsonObject) -> bool:
+    short = (raw.get("status") or {}).get("short", "")
+    return short in _LIVE
+
+
 async def _load_game_events(
     client: ApiSportsClient,
     game_id: str,
+    *,
+    force_refresh: bool = False,
 ) -> list[JsonObject]:
-    cached = await safe_redis_get_json(game_events_key(game_id))
-    if isinstance(cached, list):
-        return cached
+    if not force_refresh:
+        cached = await safe_redis_get_json(game_events_key(game_id))
+        if isinstance(cached, list):
+            return cached
 
     try:
         payload = await client.get_hockey("games/events", {"game": game_id})
@@ -142,11 +152,10 @@ async def _load_game_events(
         return []
 
 
-async def _load_raw_game(settings: Settings, game_id: str) -> JsonObject | None:
-    raw = await redis_hget_json(KEY_RAW_GAMES_HASH, game_id)
-    if isinstance(raw, dict):
-        return raw
-
+async def _fetch_raw_game_from_api(
+    settings: Settings,
+    game_id: str,
+) -> JsonObject | None:
     client = ApiSportsClient(settings)
     try:
         payload = await client.get_hockey("games", {"id": game_id})
@@ -156,6 +165,24 @@ async def _load_raw_game(settings: Settings, game_id: str) -> JsonObject | None:
     except Exception:
         logger.exception("Failed to fetch NHL game id=%s", game_id)
     return None
+
+
+async def _load_raw_game(settings: Settings, game_id: str) -> JsonObject | None:
+    cached = await redis_hget_json(KEY_RAW_GAMES_HASH, game_id)
+    cached_dict = cached if isinstance(cached, dict) else None
+
+    # Live games: always hit API-Sports so period/clock are current (Redis may lag).
+    if cached_dict and _is_live_raw(cached_dict):
+        fresh = await _fetch_raw_game_from_api(settings, game_id)
+        if fresh:
+            await redis_hmset_json(KEY_RAW_GAMES_HASH, {game_id: fresh})
+            return fresh
+        return cached_dict
+
+    if cached_dict:
+        return cached_dict
+
+    return await _fetch_raw_game_from_api(settings, game_id)
 
 
 async def build_nhl_game_detail(settings: Settings, game_id: str) -> JsonObject | None:
@@ -181,11 +208,17 @@ async def build_nhl_game_detail(settings: Settings, game_id: str) -> JsonObject 
     if home_id is not None:
         home_stats = await _load_team_stats(client, season=season, team_id=int(home_id))
 
-    events = await _load_game_events(client, game_id)
+    events = await _load_game_events(
+        client,
+        game_id,
+        force_refresh=_is_live_raw(raw),
+    )
+
+    source = "live" if _is_live_raw(raw) else "cache"
 
     return {
         "status": "ok",
-        "source": "cache",
+        "source": source,
         "game": game,
         "boxScore": build_nhl_box_score(raw),
         "teamStats": {"away": away_stats, "home": home_stats},

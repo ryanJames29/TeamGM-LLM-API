@@ -4,7 +4,7 @@ import logging
 
 from app.config import Settings
 from app.services.api_sports import ApiSportsClient
-from app.services.mlb import MLB_LEAGUE_ID, map_game
+from app.services.mlb import _LIVE, MLB_LEAGUE_ID, map_game
 from app.services.mlb_cache import (
     KEY_LEAGUE_META,
     KEY_RAW_GAMES_HASH,
@@ -12,6 +12,7 @@ from app.services.mlb_cache import (
 )
 from app.services.redis_store import (
     redis_hget_json,
+    redis_hmset_json,
     redis_set_json,
     safe_redis_get_json,
 )
@@ -106,11 +107,15 @@ async def _load_team_stats(
         return None
 
 
-async def _load_raw_game(settings: Settings, game_id: str) -> JsonObject | None:
-    raw = await redis_hget_json(KEY_RAW_GAMES_HASH, game_id)
-    if isinstance(raw, dict):
-        return raw
+def _is_live_raw(raw: JsonObject) -> bool:
+    short = (raw.get("status") or {}).get("short", "")
+    return short in _LIVE
 
+
+async def _fetch_raw_game_from_api(
+    settings: Settings,
+    game_id: str,
+) -> JsonObject | None:
     client = ApiSportsClient(settings)
     try:
         payload = await client.get_baseball("games", {"id": game_id})
@@ -120,6 +125,23 @@ async def _load_raw_game(settings: Settings, game_id: str) -> JsonObject | None:
     except Exception:
         logger.exception("Failed to fetch MLB game id=%s", game_id)
     return None
+
+
+async def _load_raw_game(settings: Settings, game_id: str) -> JsonObject | None:
+    cached = await redis_hget_json(KEY_RAW_GAMES_HASH, game_id)
+    cached_dict = cached if isinstance(cached, dict) else None
+
+    if cached_dict and _is_live_raw(cached_dict):
+        fresh = await _fetch_raw_game_from_api(settings, game_id)
+        if fresh:
+            await redis_hmset_json(KEY_RAW_GAMES_HASH, {game_id: fresh})
+            return fresh
+        return cached_dict
+
+    if cached_dict:
+        return cached_dict
+
+    return await _fetch_raw_game_from_api(settings, game_id)
 
 
 async def build_mlb_game_detail(settings: Settings, game_id: str) -> JsonObject | None:
@@ -145,9 +167,11 @@ async def build_mlb_game_detail(settings: Settings, game_id: str) -> JsonObject 
     if home_id is not None:
         home_stats = await _load_team_stats(client, season=season, team_id=int(home_id))
 
+    source = "live" if _is_live_raw(raw) else "cache"
+
     return {
         "status": "ok",
-        "source": "cache",
+        "source": source,
         "game": game,
         "boxScore": build_mlb_box_score(raw),
         "teamStats": {"away": away_stats, "home": home_stats},
