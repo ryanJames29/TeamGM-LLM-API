@@ -1,83 +1,47 @@
-# TeamGM LLM API
+# TeamGM API
 
-FastAPI backend for the TeamGM app. NHL scores are fetched in the background and served from Redis — the mobile app never hits API-Sports directly.
+FastAPI backend for the [TeamGM app](https://github.com/ryanJames29/TeamGM). It fetches NHL and MLB data on a schedule, serves it from a Redis cache, and generates AI game briefings, so the mobile app never calls the paid sports data provider directly.
 
----
+> 🚧 **In development**, alongside the TeamGM app.
 
-## Every time you work (do these in order)
+## How it works
 
-Open **three terminals** (or use tabs). Run each block from the repo root shown.
-
-### 1. Start Docker Desktop
-
-Redis runs in Docker. **Open Docker Desktop first** and wait until it says it is running.
-
-If you skip this, `docker compose` will hang or fail.
-
-### 2. Start Redis
-
-```bash
-cd TeamGM-LLM-API
-docker compose up -d
-```
-
-Check it is up:
-
-```bash
-docker compose ps
-```
-
-You should see `redis` with status `running`.
-
-### 3. Start the API
-
-```bash
-cd TeamGM-LLM-API
-source .venv/bin/activate
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Wait for this line in the logs:
+- **Scheduled sync**: APScheduler jobs pull from [API-Sports](https://api-sports.io): standings every 60 minutes, live scores every 60 seconds, and a rolling window of recent and upcoming games.
+- **Redis cache**: every read endpoint is served from Redis. The provider is only called by the background jobs, which keeps the app fast and the API quota predictable.
+- **AI briefings**: OpenAI generates a structured JSON briefing for a user's favorite team (why the next game matters, team snapshot, concern level, recent form). The prompt only allows facts from the fetched data: no invented scores or standings.
+- **Supabase**: stores users' favorite teams and saved briefings, plus optional standings history.
 
 ```
-NHL jobs started (standings every 60m, scores every 60s)
+Scheduled jobs → API-Sports → Redis ← FastAPI endpoints ← TeamGM app
+                                        ↓
+                         OpenAI (briefings) · Supabase (user data)
 ```
 
-If you see `NHL jobs disabled — could not connect to Redis`, Redis is not running. Go back to step 1–2, then **restart uvicorn** (Ctrl+C and run the command again).
+## Tech stack
 
-Quick check in a browser or curl:
+Python · FastAPI · Pydantic · Redis · APScheduler · httpx · OpenAI · Supabase · pytest · Docker (local Redis)
 
-```bash
-curl http://127.0.0.1:8000/api/v1/health
-curl http://127.0.0.1:8000/api/v1/hockey/nhl/games
-```
+## API
 
-The games endpoint may return `503` for the first 30–60 seconds while background jobs fill the cache. Refresh after a minute.
+All routes are under `/api/v1`. Interactive docs at `/docs`.
 
-### 4. Start the Expo app
+| Method | Route | Description |
+|---|---|---|
+| GET | `/health` | Health check |
+| GET | `/hockey/nhl/league` | NHL league info and standings |
+| GET | `/hockey/nhl/games` | NHL scoreboard |
+| GET | `/hockey/nhl/games/{game_id}` | NHL game detail and box score |
+| GET | `/hockey/nhl/sync-status` | Cache and job status |
+| GET | `/baseball/mlb/league` | MLB league info and standings |
+| GET | `/baseball/mlb/games` | MLB scoreboard |
+| GET | `/baseball/mlb/games/{game_id}` | MLB game detail and box score |
+| GET | `/baseball/mlb/sync-status` | Cache and job status |
+| GET | `/insights/home` | Latest saved briefing |
+| POST | `/insights/home/generate` | Generate a fresh briefing |
 
-In a **separate** terminal:
+## Running locally
 
-```bash
-cd TeamGM/TeamGM
-npx expo start -c
-```
-
-Open the app → **Scores** tab → select **NHL**.
-
-Your `TeamGM/TeamGM/.env` must include:
-
-```env
-EXPO_PUBLIC_API_URL=http://127.0.0.1:8000
-```
-
-Change the port if you run uvicorn on something other than `8000`, then restart Expo with `-c`.
-
----
-
-## First-time setup (once)
-
-### API
+### First-time setup
 
 ```bash
 cd TeamGM-LLM-API
@@ -87,107 +51,60 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` and set at minimum:
+Set at minimum `API_SPORTS_KEY` in `.env` (get one at [dashboard.api-sports.io](https://dashboard.api-sports.io/)). The Redis URL and job intervals in `.env.example` work for local dev.
 
-```env
-API_SPORTS_KEY=your_key_from_api_sports
-```
+For AI briefings, also set `OPENAI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`.
 
-Get a key at [dashboard.api-sports.io](https://dashboard.api-sports.io/).
+### Every time you work
 
-Redis URL and job settings in `.env.example` are fine for local dev — no changes needed unless you want to tweak intervals.
+1. **Start Docker Desktop** and wait until it's running (Redis runs in Docker).
+2. **Start Redis:**
+   ```bash
+   docker compose up -d
+   docker compose ps   # redis should be "running"
+   ```
+3. **Start the API:**
+   ```bash
+   source .venv/bin/activate
+   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+   ```
+   Wait for `NHL jobs started (standings every 60m, scores every 60s)`. If you see `NHL jobs disabled — could not connect to Redis`, Redis isn't running; start it and restart uvicorn.
+4. **Start the app:** see the [TeamGM app README](https://github.com/ryanJames29/TeamGM).
 
-### Expo app
+The scoreboard endpoints can return `503` for the first 30–60 seconds while the jobs fill the cache.
 
-```bash
-cd TeamGM/TeamGM
-cp .env.example .env
-```
-
-Set `EXPO_PUBLIC_API_URL` to match the API port (default `8000`).
-
----
-
-## Useful URLs
+### Useful URLs
 
 | What | URL |
-|------|-----|
+|---|---|
 | API docs | http://127.0.0.1:8000/docs |
 | Health | http://127.0.0.1:8000/api/v1/health |
-| NHL games (what the app calls) | http://127.0.0.1:8000/api/v1/hockey/nhl/games |
+| NHL games | http://127.0.0.1:8000/api/v1/hockey/nhl/games |
 | Job / cache status | http://127.0.0.1:8000/api/v1/hockey/nhl/sync-status |
 
----
+## Troubleshooting
 
-## When something breaks
+**App shows a JSON parse error or "Could not load NHL scores"**: Redis or the API isn't running, or the API started before Redis. Start Docker, run `docker compose up -d`, restart uvicorn, then pull to refresh in the app.
 
-### App shows a JSON parse error or “Could not load NHL scores”
+**`503` on `/hockey/nhl/games`**: the cache is still empty. Wait about 60 seconds and check `/hockey/nhl/sync-status`: `leagueMetaReady: true` and `rawGamesInRedis` above 0 means it's ready.
 
-Usually Redis or the API is not running, or the API started **before** Redis.
+**`Address already in use` on port 8000**: find and stop the other process (`lsof -nP -iTCP:8000 -sTCP:LISTEN`, then `kill <PID>`), or run on another port and update `EXPO_PUBLIC_API_URL` in the app.
 
-1. Confirm Docker Desktop is running.
-2. `docker compose up -d` in `TeamGM-LLM-API`.
-3. Restart uvicorn (Ctrl+C, then start again).
-4. Pull to refresh in the app.
+**Physical phone**: use your computer's LAN IP (`ipconfig getifaddr en0`) instead of `127.0.0.1`; phone and computer must be on the same network. Android emulator: `http://10.0.2.2:8000`.
 
-### `503` on `/hockey/nhl/games`
+## Optional: standings in Supabase
 
-Cache is empty. Wait ~60 seconds for sync jobs, then retry. Check:
-
-```bash
-curl http://127.0.0.1:8000/api/v1/hockey/nhl/sync-status
-```
-
-`leagueMetaReady: true` and `rawGamesInRedis` > 0 means you are good.
-
-### `Address already in use` on port 8000
-
-Something else is using the port:
-
-```bash
-lsof -nP -iTCP:8000 -sTCP:LISTEN
-kill <PID>
-```
-
-Or use another port and update `EXPO_PUBLIC_API_URL`:
-
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
-```
-
-### Physical iPhone / Android device (not simulator)
-
-Use your Mac’s LAN IP instead of `127.0.0.1`:
-
-```env
-EXPO_PUBLIC_API_URL=http://192.168.x.x:8000
-```
-
-Find your IP: `ipconfig getifaddr en0` (Wi‑Fi). Phone and Mac must be on the same network.
-
-Android emulator: `http://10.0.2.2:8000`
-
----
-
-## Optional: Supabase (standings in DB)
-
-Not required for local dev. Standings still cache in Redis without it.
+Standings are cached in Redis without this. To also store them in Postgres:
 
 1. Create a project at [supabase.com](https://supabase.com).
 2. Run `supabase/migrations/001_nhl_team_records.sql` in the SQL editor.
-3. Add to `.env`:
-
-```env
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-```
-
----
+3. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `.env`.
 
 ## Tests
 
 ```bash
-cd TeamGM-LLM-API
 source .venv/bin/activate
 pytest
 ```
+
+Covers the NHL/MLB data mappers, box scores, standings parsing, scoreboard sorting and filtering, cache behavior, head-to-head, and the briefing prompts.
